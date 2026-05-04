@@ -1,0 +1,40 @@
+default:
+  # Repositories to clone from remote (using git clone)
+  repos:
+    # - git@github.com:your-org/your-app.git
+    # - git@github.com:your-org/your-api.git
+
+  # Local directories/files to copy (useful for large repos or local-only projects)
+  # Use "source -> dest" to control the destination name, or just a path to keep the original name
+  local_files:
+    # - ~/projects/my-project
+    # - "~/projects/my-infrastructure -> infra"
+
+  description: Default workspace template
+
+test:
+  # Repositories to clone from remote (using git clone)
+  repos: []
+
+  # Local directories/files to copy
+  # Use "source -> dest" to control the destination name
+  local_files:
+    # - ~/projects/my-project
+
+  description: A minimal test workspace
+
+# Agent-specific command restrictions (used by custom hooks)
+# agent_config:
+#   claude_code:
+#     allowed_commands:
+#       - pattern: ".*"
+#         description: "All commands allowed"
+#     blocked_commands:
+#       - pattern: "^kubectl.*--context=production"
+#         description: "Production cluster access"
+#       - pattern: "^terraform apply(?!.*--target)"
+#         description: "Untargeted terraform apply"
+#     environment_restrictions:
+#       - production
+#       - prod
+#     max_command_timeout: 600

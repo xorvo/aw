@@ -1,0 +1,60 @@
+# Starship.rs configuration for agent-workspace
+# Add this to your ~/.config/starship.toml file
+
+# Basic workspace indicator
+[custom.workspace]
+command = 'echo $AGENT_WORKSPACE_NAME'
+when = '[ -n "$AGENT_WORKSPACE_NAME" ]'
+symbol = '◉ '
+style = 'fg:242'
+format = '[$symbol$output]($style) '
+
+# Alternative configurations:
+
+# Option 1: With brackets (like p10k)
+# [custom.workspace]
+# command = 'echo $AGENT_WORKSPACE_NAME'
+# when = '[ -n "$AGENT_WORKSPACE_NAME" ]'
+# symbol = ''
+# style = 'fg:242'
+# format = '[[$symbol$output]]($style) '
+
+# Option 2: Blue accent
+# [custom.workspace]
+# command = 'echo $AGENT_WORKSPACE_NAME'
+# when = '[ -n "$AGENT_WORKSPACE_NAME" ]'
+# symbol = '◆ '
+# style = 'bold blue'
+# format = '[$symbol$output]($style) '
+
+# Option 3: Green with icon
+# [custom.workspace]
+# command = 'echo $AGENT_WORKSPACE_NAME'
+# when = '[ -n "$AGENT_WORKSPACE_NAME" ]'
+# symbol = '⬢ '
+# style = 'bold green'
+# format = '[$symbol$output]($style) '
+
+# Option 4: Orange/amber
+# [custom.workspace]
+# command = 'echo $AGENT_WORKSPACE_NAME'
+# when = '[ -n "$AGENT_WORKSPACE_NAME" ]'
+# symbol = '▲ '
+# style = 'bold fg:208'
+# format = '[$symbol$output]($style) '
+
+# Option 5: With truncation (requires shell command)
+# [custom.workspace]
+# command = 'echo ${AGENT_WORKSPACE_NAME:0:15}'
+# when = '[ -n "$AGENT_WORKSPACE_NAME" ]'
+# symbol = '◈ '
+# style = 'fg:135'
+# format = '[$symbol$output]($style) '
+
+# Option 6: Only show in workspace directories
+# [custom.workspace]
+# command = 'echo $AGENT_WORKSPACE_NAME'
+# when = '[ -n "$AGENT_WORKSPACE_NAME" ] && [[ $PWD == *"/agent-workspaces/"* ]]'
+# symbol = '📦 '
+# style = 'bold cyan'
+# format = '[$symbol$output]($style) '

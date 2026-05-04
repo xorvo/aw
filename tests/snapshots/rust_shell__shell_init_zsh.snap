@@ -37,4 +37,11 @@ __aw_chpwd() {
 typeset -ag chpwd_functions
 chpwd_functions+=(__aw_chpwd)
 __aw_chpwd
+
+# Tab completion. Cheap (~one binary launch per shell startup) and
+# self-contained — clap's emitted script registers via `compdef` so this
+# works even if oh-my-zsh / prezto already ran compinit.
+if (( $+functions[compdef] )) || command -v compinit >/dev/null 2>&1; then
+  source <(command aw completions zsh)
+fi
 # <<< aw shell-init (zsh) <<<

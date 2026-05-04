@@ -46,4 +46,9 @@ case "$PROMPT_COMMAND" in
   *) PROMPT_COMMAND="__aw_check_chpwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
 esac
 __aw_chpwd
+
+# Tab completion via the bash-completion plumbing built into bash 4+.
+# Clap emits `complete -F _aw -o ... aw` at the end of its output, so
+# sourcing inline is enough.
+source <(command aw completions bash)
 # <<< aw shell-init (bash) <<<

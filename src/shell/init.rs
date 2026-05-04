@@ -62,6 +62,13 @@ __aw_chpwd() {
 typeset -ag chpwd_functions
 chpwd_functions+=(__aw_chpwd)
 __aw_chpwd
+
+# Tab completion. Cheap (~one binary launch per shell startup) and
+# self-contained — clap's emitted script registers via `compdef` so this
+# works even if oh-my-zsh / prezto already ran compinit.
+if (( $+functions[compdef] )) || command -v compinit >/dev/null 2>&1; then
+  source <(command aw completions zsh)
+fi
 # <<< aw shell-init (zsh) <<<
 "#)
 }
@@ -111,6 +118,11 @@ case "$PROMPT_COMMAND" in
   *) PROMPT_COMMAND="__aw_check_chpwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
 esac
 __aw_chpwd
+
+# Tab completion via the bash-completion plumbing built into bash 4+.
+# Clap emits `complete -F _aw -o ... aw` at the end of its output, so
+# sourcing inline is enough.
+source <(command aw completions bash)
 # <<< aw shell-init (bash) <<<
 "#)
 }
@@ -145,6 +157,9 @@ function __aw_chpwd --on-variable PWD
   end
 end
 __aw_chpwd
+
+# Tab completion.
+command aw completions fish | source
 # <<< aw shell-init (fish) <<<
 "#)
 }

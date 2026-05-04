@@ -31,4 +31,7 @@ function __aw_chpwd --on-variable PWD
   end
 end
 __aw_chpwd
+
+# Tab completion.
+command aw completions fish | source
 # <<< aw shell-init (fish) <<<

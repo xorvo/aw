@@ -1,5 +1,13 @@
 base/
 
+# Rust
+target/
+Cargo.lock.bak
+
+# insta
+*.snap.new
+*.pending-snap
+
 .DS_Store
 
 # macOS

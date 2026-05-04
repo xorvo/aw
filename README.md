@@ -1,12 +1,22 @@
 # Agent Workspace (aw)
 
-A helper to setup sub-workspaces in your local environment which will be optimized for working with AI Agents like [Claude Code](https://www.anthropic.com/claude-code).
+A helper to setup sub-workspaces in your local environment optimized for
+AI agents like [Claude Code](https://www.anthropic.com/claude-code), with
+a tmux-based dashboard ([`aw dash`](docs/dash.md)) for live agent state.
 
 ## Installation
 
 ```bash
-./install.sh
+./install.sh                        # builds the Rust binary, installs to ~/.local/bin
+aw install all                      # interactive: shell hook + agent hooks + tmux bindings
 ```
+
+Requires a Rust toolchain (https://rustup.rs) at install time only — the
+shipped binary has no runtime dependencies beyond `git` and (optionally)
+`tmux`.
+
+> Migrating from a previous bash-based install? See
+> [`docs/migration.md`](docs/migration.md).
 
 This will:
 
@@ -80,7 +90,25 @@ aw list                  # List all workspaces
 aw delete my-feature     # Delete a workspace
 ```
 
-### 5. Quick Access Commands
+### 5. Dashboard
+
+`aw dash` opens a tmux popup TUI showing every active agent across all your
+workspaces — what they're doing, who's waiting for input, and one-keystroke
+jump to any pane:
+
+```bash
+aw dash                  # full-screen popup (or bind to prefix + a)
+aw dash sidebar          # narrow always-on side pane
+aw dash status-line      # one-liner for tmux's status-right
+aw dash next-ready       # jump to the oldest waiting agent
+aw dash json             # snapshot to stdout (for scripts)
+```
+
+State comes from agent hooks (Claude Code, Codex, pi) wired by
+`aw install hooks --agent <name>`. See [`docs/dash.md`](docs/dash.md) for
+the full key map, hook contract, and state schema.
+
+### 6. Quick Access Commands
 
 ```bash
 aw edit-config           # Open config file in editor

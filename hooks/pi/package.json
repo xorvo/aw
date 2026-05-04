@@ -1,0 +1,7 @@
+{
+  "name": "aw-dash",
+  "version": "0.1.0",
+  "description": "Pi extension that reports agent state to aw dash via `aw hook`.",
+  "type": "module",
+  "main": "index.ts"
+}

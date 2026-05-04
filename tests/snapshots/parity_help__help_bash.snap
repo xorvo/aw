@@ -1,0 +1,29 @@
+---
+source: tests/parity_help.rs
+expression: stdout
+---
+aw - Manage isolated workspaces for AI agents
+
+Usage:
+  aw <command> [options]
+
+Commands:
+  init [base-name]        Initialize base workspace (default: 'default')
+  create <name> [options] Create a new workspace from base
+    --base <base-name>    Use specific base workspace (default: 'default')
+  list                    List all workspaces
+  open <name> [options]  Enter workspace (tmux session if available)
+    --no-tmux             Open in a plain shell instead of tmux
+  delete <name>           Delete a workspace
+  config                  Show configuration file location
+  edit-config             Open config file in default editor
+  edit-base <base-name>   Open base workspace directory in editor
+  sync                    Sync all repos in current workspace with remote
+  open-home               Open tool home directory in editor
+  help                    Show this help message
+
+Environment Variables:
+  AW_INSTALL_DIR              Tool home directory (default: ~/.agent-workspaces)
+  AW_WORKSPACES_DIR    Where workspaces are created (default: ~/agent-workspaces)
+  AW_CONFIG_FILE       Config file path (default: $AW_INSTALL_DIR/config.yaml)
+  AW_BIN_DIR           Where 'aw' command is installed (default: ~/.local/bin)

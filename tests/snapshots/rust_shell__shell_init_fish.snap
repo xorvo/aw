@@ -1,0 +1,34 @@
+---
+source: tests/rust_shell.rs
+expression: "shell_init(\"fish\")"
+---
+# >>> aw shell-init (fish) >>>
+function aw
+  switch $argv[1]
+    case start enter open
+      set -l rest $argv[2..-1]
+      set -l script (command aw _shell-start $rest)
+      or return $status
+      eval $script
+    case '*'
+      command aw $argv
+  end
+end
+
+function __aw_chpwd --on-variable PWD
+  set -l ws (command aw _detect-workspace $PWD 2>/dev/null)
+  if test -z "$ws"
+    set -e AGENT_WORKSPACE
+    set -e AGENT_WORKSPACE_NAME
+    return 0
+  end
+  set -gx AGENT_WORKSPACE $ws
+  set -gx AGENT_WORKSPACE_NAME (basename $ws)
+  for h in $HOME/.agent-workspaces/hooks.d/*.sh $ws/.agent-workspace/hooks.d/*.sh
+    if test -r $h
+      bass source $h ^/dev/null; or source $h
+    end
+  end
+end
+__aw_chpwd
+# <<< aw shell-init (fish) <<<

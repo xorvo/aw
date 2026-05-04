@@ -1,0 +1,7 @@
+---
+source: tests/parity_list.rs
+expression: out
+---
+📂 Workspaces in: <WORKSPACES_DIR>
+
+  • feat-a (base: default, created: <TIMESTAMP>)

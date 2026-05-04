@@ -1,0 +1,49 @@
+---
+source: tests/rust_shell.rs
+expression: "shell_init(\"bash\")"
+---
+# >>> aw shell-init (bash) >>>
+aw() {
+  case "${1-}" in
+    start|enter|open)
+      shift
+      local __aw_script
+      __aw_script=$(command aw _shell-start "$@") || return $?
+      eval "$__aw_script"
+      ;;
+    *)
+      command aw "$@"
+      ;;
+  esac
+}
+
+__aw_chpwd() {
+  local ws
+  ws=$(command aw _detect-workspace "$PWD" 2>/dev/null) || return 0
+  if [[ -z $ws ]]; then
+    unset AGENT_WORKSPACE AGENT_WORKSPACE_NAME
+    return 0
+  fi
+  export AGENT_WORKSPACE="$ws"
+  export AGENT_WORKSPACE_NAME="$(basename "$ws")"
+  local h
+  for h in "$HOME/.agent-workspaces/hooks.d"/*.sh "$ws/.agent-workspace/hooks.d"/*.sh; do
+    [[ -r $h ]] && source "$h"
+  done
+}
+
+# Bash has no chpwd — wrap PROMPT_COMMAND. Save the old PWD between calls
+# so we only fire when it actually changes.
+__aw_last_pwd="$PWD"
+__aw_check_chpwd() {
+  if [[ $PWD != $__aw_last_pwd ]]; then
+    __aw_last_pwd="$PWD"
+    __aw_chpwd
+  fi
+}
+case "$PROMPT_COMMAND" in
+  *__aw_check_chpwd*) ;;
+  *) PROMPT_COMMAND="__aw_check_chpwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
+esac
+__aw_chpwd
+# <<< aw shell-init (bash) <<<

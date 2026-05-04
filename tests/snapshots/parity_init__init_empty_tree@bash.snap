@@ -1,0 +1,7 @@
+---
+source: tests/parity_init.rs
+expression: manifest
+---
+entries:
+  ".agent-workspace":
+    kind: dir

@@ -1,0 +1,7 @@
+---
+source: tests/rust_shell.rs
+expression: cap.stdout
+---
+cd '<WORKSPACES_DIR>/feat-a'
+export AGENT_WORKSPACE='<WORKSPACES_DIR>/feat-a'
+export AGENT_WORKSPACE_NAME='feat-a'

@@ -46,6 +46,8 @@ fn main() -> Result<()> {
         Cmd::ShellStart { name, no_tmux } => workspace::start::shell_start(&name, no_tmux),
         Cmd::DetectWorkspace { cwd } => shell::detect::run(&cwd),
         Cmd::SidebarLoop => dash::tui::run_sidebar_loop(),
+        Cmd::ListWorkspaces => workspace::listing::list_workspaces(),
+        Cmd::ListBases => workspace::listing::list_bases(),
     }
 }
 

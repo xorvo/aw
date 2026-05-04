@@ -47,8 +47,51 @@ case "$PROMPT_COMMAND" in
 esac
 __aw_chpwd
 
-# Tab completion via the bash-completion plumbing built into bash 4+.
-# Clap emits `complete -F _aw -o ... aw` at the end of its output, so
-# sourcing inline is enough.
-source <(command aw completions bash)
+# ---------- Tab completion ----------
+# Hand-rolled to support dynamic workspace / base name completion. Mirrors
+# the zsh override above; same `aw _list-*` calls.
+__aw_complete() {
+  local cur prev cmd
+  COMPREPLY=()
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+  cmd="${COMP_WORDS[1]}"
+
+  local subs="init create list ls start enter open delete rm config edit-config edit-base sync open-home dash hook shell-init completions install"
+  if [ "$COMP_CWORD" -eq 1 ]; then
+    COMPREPLY=( $(compgen -W "$subs" -- "$cur") ); return 0
+  fi
+
+  case "$cmd" in
+    start|enter|open|delete|rm)
+      COMPREPLY=( $(compgen -W "$(command aw _list-workspaces 2>/dev/null)" -- "$cur") ) ;;
+    edit-base|init)
+      COMPREPLY=( $(compgen -W "$(command aw _list-bases 2>/dev/null)" -- "$cur") ) ;;
+    create)
+      if [ "$prev" = "--base" ]; then
+        COMPREPLY=( $(compgen -W "$(command aw _list-bases 2>/dev/null)" -- "$cur") )
+      else
+        COMPREPLY=( $(compgen -W "--base" -- "$cur") )
+      fi ;;
+    dash)
+      [ "$COMP_CWORD" -eq 2 ] && COMPREPLY=( $(compgen -W "sidebar status-line next-ready park json gc" -- "$cur") ) ;;
+    install)
+      if [ "$COMP_CWORD" -eq 2 ]; then
+        COMPREPLY=( $(compgen -W "shell hooks tmux-bindings all" -- "$cur") )
+      elif [ "$prev" = "--agent" ]; then
+        COMPREPLY=( $(compgen -W "claude codex pi all" -- "$cur") )
+      elif [ "$prev" = "--shell" ]; then
+        COMPREPLY=( $(compgen -W "zsh bash fish" -- "$cur") )
+      fi ;;
+    shell-init|completions)
+      [ "$COMP_CWORD" -eq 2 ] && COMPREPLY=( $(compgen -W "zsh bash fish" -- "$cur") ) ;;
+    hook)
+      case "$prev" in
+        --agent) COMPREPLY=( $(compgen -W "claude codex pi" -- "$cur") ) ;;
+        *) COMPREPLY=( $(compgen -W "--agent --event --prompt" -- "$cur") ) ;;
+      esac ;;
+  esac
+  return 0
+}
+complete -F __aw_complete aw
 # <<< aw shell-init (bash) <<<

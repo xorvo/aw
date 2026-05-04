@@ -94,6 +94,12 @@ pub enum Cmd {
     /// Internal: sidebar redraw loop (called by `aw dash sidebar`)
     #[command(name = "_sidebar-loop", hide = true)]
     SidebarLoop,
+    /// Internal: list workspace names (used by tab completion)
+    #[command(name = "_list-workspaces", hide = true)]
+    ListWorkspaces,
+    /// Internal: list base names (used by tab completion)
+    #[command(name = "_list-bases", hide = true)]
+    ListBases,
 }
 
 #[derive(Subcommand, Debug)]

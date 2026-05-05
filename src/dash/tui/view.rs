@@ -14,8 +14,13 @@ use crate::dash::tui::app::{App, Mode, Row};
 
 pub fn render(f: &mut Frame, app: &App) {
     let area = f.area();
+    // Horizontal margin only — pushes the inner panels away from the
+    // tmux popup's left/right border without wasting vertical space.
+    // Header and footer stay flush against the popup's top/bottom which
+    // already have the popup's own border breathing room.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
+        .horizontal_margin(1)
         .constraints([
             Constraint::Length(1),    // header (status counts)
             Constraint::Min(0),       // body

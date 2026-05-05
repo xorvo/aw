@@ -346,6 +346,70 @@ fn dead_panes_parked_sentinels_are_also_cleaned() {
     assert!(!park_dir.join("%888").exists(), "stale park sentinel should be auto-deleted");
 }
 
+// ---- bug 6: unhooked pane label uses window_name, not foreground command ----
+
+#[test]
+fn unhooked_pane_label_uses_window_name_not_current_command() {
+    if !tmux_available() {
+        eprintln!("tmux not available; skipping");
+        return;
+    }
+    let env = TestEnv::new();
+    let server = PrivateTmux::spawn(&env, "aw-named");
+    // Rename the window so it has a stable, human-friendly label.
+    let _ = server.raw(&["rename-window", "-t", "aw-named", "claude"]);
+
+    let snapshot = dash_json(&env, &server);
+    let entry = snapshot
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["workspace"].as_str() == Some("named"))
+        .expect("named workspace pane");
+    assert_eq!(
+        entry["agent"], "claude",
+        "should pick up the renamed window as the label, not the foreground shell"
+    );
+}
+
+// ---- bug 7: empty tmux pane list does NOT trigger auto-gc ----
+
+#[test]
+fn empty_tmux_list_does_not_wipe_hook_files() {
+    if !tmux_available() {
+        eprintln!("tmux not available; skipping");
+        return;
+    }
+    let env = TestEnv::new();
+    // Spawn a server with one pane in a NON-aw session, so the aw-* filter
+    // returns 0 panes even though tmux itself is healthy and has 1 pane.
+    let server = PrivateTmux::spawn(&env, "not-aw-prefixed");
+
+    seed_state_file(&env, "%50", "alpha", "claude");
+    let path = env.state_dir.join("panes/%50.json");
+    assert!(path.is_file(), "precondition");
+
+    let _ = dash_json(&env, &server);
+
+    // Auto-gc condition is "panes is non-empty AND id is missing." The
+    // session above contributes one pane to `panes`, so the auto-gc loop
+    // does run; %50 is not live, so it gets deleted. That's correct.
+    // To exercise the *conservative* branch — empty list — we kill the
+    // session and re-run.
+    let _ = server.raw(&["kill-session", "-t", "not-aw-prefixed"]);
+
+    seed_state_file(&env, "%51", "beta", "codex");
+    let path2 = env.state_dir.join("panes/%51.json");
+    assert!(path2.is_file());
+
+    let _ = dash_json(&env, &server);
+
+    assert!(
+        path2.is_file(),
+        "state file should NOT be auto-deleted when tmux returns zero panes"
+    );
+}
+
 // ---- bug 5: live pane keeps its hook-derived status across loads ----
 
 #[test]

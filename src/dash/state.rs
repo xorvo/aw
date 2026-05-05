@@ -135,7 +135,7 @@ impl Snapshot {
                 // (3) For every live pane in an aw-* session, build a row,
                 //     overlaying hook state when present. tmux fields
                 //     always win over the file's stored values.
-                for tp in panes {
+                for tp in &panes {
                     let workspace = match tp.session.strip_prefix("aw-") {
                         Some(w) => w.to_string(),
                         None => continue,
@@ -149,19 +149,23 @@ impl Snapshot {
                             // Refresh ground-truth fields from tmux; keep
                             // hook-derived ones (status, last_event,
                             // last_activity, last_prompt, agent) intact.
-                            s.session = tp.session;
+                            s.session = tp.session.clone();
                             s.workspace = workspace;
-                            s.cwd = tp.path;
+                            s.cwd = tp.path.clone();
                             s.parked = parked_now;
                             s
                         }
                         None => PaneState {
                             schema_version: 1,
-                            pane_id: tp.pane_id,
-                            session: tp.session,
+                            pane_id: tp.pane_id.clone(),
+                            session: tp.session.clone(),
                             workspace,
-                            cwd: tp.path,
-                            agent: tp.command,
+                            cwd: tp.path.clone(),
+                            // Stable label cascade: pane_title → window_name
+                            // → pane_current_command. Matches the "good
+                            // human friendly name" tmux's status bar shows,
+                            // not the volatile foreground process.
+                            agent: crate::dash::tmux::label_from_tmux(tp),
                             status: Status::Idle,
                             last_event: String::new(),
                             last_activity: 0,
@@ -172,14 +176,19 @@ impl Snapshot {
                     entries.push(row);
                 }
 
-                // (4) Auto-gc: remove state files that no longer match a
-                //     live pane. Best-effort — failures here are silent
-                //     because the next load will retry.
-                for (pane_id, path) in &hook_paths {
-                    if !live_ids.contains(pane_id) {
-                        let _ = std::fs::remove_file(path);
-                        if let Some(ref pdir) = parked_dir {
-                            let _ = std::fs::remove_file(pdir.join(pane_id));
+                // (4) Auto-gc — but only when we got a non-empty live list.
+                //     If tmux returned zero panes it's almost certainly a
+                //     transient (server just restarted, or every aw-*
+                //     session was just killed). Better to keep the hook
+                //     files and rebuild the rows on the next tick than to
+                //     wipe the cache during a blip.
+                if !panes.is_empty() {
+                    for (pane_id, path) in &hook_paths {
+                        if !live_ids.contains(pane_id) {
+                            let _ = std::fs::remove_file(path);
+                            if let Some(ref pdir) = parked_dir {
+                                let _ = std::fs::remove_file(pdir.join(pane_id));
+                            }
                         }
                     }
                 }

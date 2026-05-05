@@ -35,8 +35,12 @@ use anyhow::Result;
 
 use crate::install::marker;
 
+// `-b rounded` matches the rounded corners ratatui draws on the inside,
+// so the popup looks like one continuous frame. Requires tmux >= 3.3 —
+// older versions ignore unknown `-b` values and may error; we document
+// 3.3 as the minimum in CONTRIBUTING.md.
 const TMUX_BLOCK: &str = "\
-bind-key a display-popup -E -w 80% -h 60% \"aw dash\"
+bind-key a display-popup -E -w 80% -h 60% -b rounded \"aw dash\"
 bind-key N run-shell \"aw dash next-ready\"
 bind-key C-p run-shell \"aw dash park\"
 bind-key o run-shell \"aw dash sidebar\"

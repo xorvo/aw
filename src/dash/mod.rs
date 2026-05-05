@@ -62,12 +62,13 @@ pub fn cmd_park(pane_override: Option<&str>) -> Result<()> {
     let dir = parked_dir()?;
     std::fs::create_dir_all(&dir)?;
     let sentinel = dir.join(sanitize_pane(&pane));
+    let glyph = crate::dash::render::parked_glyph();
     if sentinel.exists() {
         std::fs::remove_file(&sentinel)?;
-        println!("⏏  Unparked {}", pane);
+        println!("{}  Unparked {}", glyph, pane);
     } else {
         std::fs::write(&sentinel, "")?;
-        println!("⏏  Parked {}", pane);
+        println!("{}  Parked {}", glyph, pane);
     }
     Ok(())
 }
@@ -82,7 +83,10 @@ pub fn cmd_next_ready() -> Result<()> {
             tmux::switch_to_pane(&pane);
         }
         None => {
-            println!("✓ All clear — no agents waiting or idle.");
+            println!(
+                "{} All clear — no agents waiting or idle.",
+                crate::dash::render::status_glyph(state::Status::Idle)
+            );
         }
     }
     Ok(())
@@ -114,24 +118,27 @@ fn pick_next_ready(snap: &state::Snapshot) -> Option<String> {
 
 /// `aw dash status-line` — one-line summary for tmux status-right.
 pub fn cmd_status_line() -> Result<()> {
+    use crate::dash::render::status_glyph;
+    use crate::dash::state::Status;
+
     let snap = state::Snapshot::load()?;
     let (working, waiting, idle) = snap.counts();
     if waiting == 0 && working == 0 && idle == 0 {
         return Ok(());
     }
     if waiting == 0 && working == 0 {
-        print!("✓ all clear");
+        print!("{} all clear", status_glyph(Status::Idle));
         return Ok(());
     }
     let mut parts = Vec::new();
     if working > 0 {
-        parts.push(format!("⚡ {} working", working));
+        parts.push(format!("{} {} working", status_glyph(Status::Working), working));
     }
     if waiting > 0 {
-        parts.push(format!("⏸ {} waiting", waiting));
+        parts.push(format!("{} {} waiting", status_glyph(Status::Waiting), waiting));
     }
     if idle > 0 {
-        parts.push(format!("✓ {} idle", idle));
+        parts.push(format!("{} {} idle", status_glyph(Status::Idle), idle));
     }
     print!("{}", parts.join("  "));
     Ok(())

@@ -6,12 +6,53 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::dash::state::{PaneState, Status};
 
-/// Status icon + label.
+/// Which icon set to render. Nerd Font is the default — modern terminals
+/// with a Nerd-Font-patched font (FiraCode Nerd Font, JetBrainsMono Nerd
+/// Font, MesloLGS NF, etc.) get crisp single-cell glyphs that line up.
+/// ASCII is a fallback for environments without a patched font; opt in via
+/// `AW_DASH_ICONS=ascii`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum IconSet {
+    NerdFont,
+    Ascii,
+}
+
+pub fn icon_set() -> IconSet {
+    match std::env::var("AW_DASH_ICONS").as_deref() {
+        Ok("ascii") => IconSet::Ascii,
+        _ => IconSet::NerdFont,
+    }
+}
+
+/// Status icon. Nerd Font codepoints below are FontAwesome glyphs in the
+/// PUA range (rendered as single-cell by Nerd-Font-patched monospace
+/// terminals), so `<glyph><space><digit>` always lines up.
+///
+///   working: nf-fa-bolt   (\u{F0E7})
+///   waiting: nf-fa-bell   (\u{F0F3})
+///   idle:    nf-fa-check  (\u{F00C})
 pub fn status_glyph(s: Status) -> &'static str {
-    match s {
-        Status::Working => "⚡",
-        Status::Waiting => "⏸",
-        Status::Idle => "✓",
+    match icon_set() {
+        IconSet::NerdFont => match s {
+            Status::Working => "\u{F0E7}",
+            Status::Waiting => "\u{F0F3}",
+            Status::Idle => "\u{F00C}",
+        },
+        IconSet::Ascii => match s {
+            Status::Working => ">",
+            Status::Waiting => "!",
+            Status::Idle => ".",
+        },
+    }
+}
+
+/// Glyph for the parked indicator (a sentinel state, not a `Status`).
+///
+///   parked:  nf-fa-pause  (\u{F04C})
+pub fn parked_glyph() -> &'static str {
+    match icon_set() {
+        IconSet::NerdFont => "\u{F04C}",
+        IconSet::Ascii => "_",
     }
 }
 

@@ -75,9 +75,14 @@ fn sidebar_renders_workspaces_and_panes() {
     assert!(cleaned.contains("claude"), "missing claude:\n{}", cleaned);
     assert!(cleaned.contains("pi"), "missing pi:\n{}", cleaned);
     // 1 working, 1 waiting (both claude on ws-a), 1 idle (pi on ws-b).
-    assert!(cleaned.contains("⚡1"), "wrong counts:\n{}", cleaned);
-    assert!(cleaned.contains("⏸1"), "wrong counts:\n{}", cleaned);
-    assert!(cleaned.contains("✓1"), "wrong counts:\n{}", cleaned);
+    // Don't bind on glyph bytes (icon set may change); the count digits in
+    // the header line are still a stable assertion.
+    let header_line = cleaned.lines().next().unwrap_or("");
+    let counts: Vec<u32> = header_line
+        .split_whitespace()
+        .filter_map(|w| w.parse::<u32>().ok())
+        .collect();
+    assert_eq!(counts, vec![1, 1, 1], "header counts wrong:\n{}", cleaned);
 }
 
 fn fire_hook(

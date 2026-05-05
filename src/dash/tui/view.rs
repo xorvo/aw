@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::dash::render::{humanize_age, status_glyph};
+use crate::dash::render::{humanize_age, parked_glyph, status_glyph};
 use crate::dash::state::{Snapshot, Status};
 use crate::dash::tui::app::{App, Mode, Row};
 
@@ -37,23 +37,26 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
         ),
         Span::raw("    "),
     ];
+    let g_work = status_glyph(Status::Working);
+    let g_wait = status_glyph(Status::Waiting);
+    let g_idle = status_glyph(Status::Idle);
     if working > 0 {
         spans.push(Span::styled(
-            format!("⚡ {} working", working),
+            format!("{} {} working", g_work, working),
             Style::default().fg(Color::Yellow),
         ));
         spans.push(Span::raw("   "));
     }
     if waiting > 0 {
         spans.push(Span::styled(
-            format!("⏸ {} waiting", waiting),
+            format!("{} {} waiting", g_wait, waiting),
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw("   "));
     }
     if idle > 0 {
         spans.push(Span::styled(
-            format!("✓ {} idle", idle),
+            format!("{} {} idle", g_idle, idle),
             Style::default().fg(Color::Green),
         ));
     }
@@ -140,7 +143,7 @@ fn line_for_row(row: &Row, selected: bool) -> Line<'static> {
             };
             let parked = if p.parked {
                 Some(Span::styled(
-                    " (parked)",
+                    format!(" {} parked", parked_glyph()),
                     Style::default().fg(Color::DarkGray),
                 ))
             } else {
@@ -275,9 +278,14 @@ fn truncate(s: &str, max: usize) -> String {
 pub fn render_sidebar_text(snap: &Snapshot) -> String {
     let mut out = String::new();
     let (working, waiting, idle) = snap.counts();
+    // One space between glyph and count, two spaces between groups so the
+    // columns line up regardless of whether the glyph is rendered as 1 or 2
+    // cells wide.
     out.push_str(&format!(
-        " ⚡{} ⏸{} ✓{}\n",
-        working, waiting, idle
+        " {} {}  {} {}  {} {}\n",
+        status_glyph(Status::Working), working,
+        status_glyph(Status::Waiting), waiting,
+        status_glyph(Status::Idle),    idle,
     ));
     out.push_str(" ───────────────────────────────\n");
     if snap.entries.is_empty() {
@@ -292,7 +300,11 @@ pub fn render_sidebar_text(snap: &Snapshot) -> String {
             let label = if ws.is_empty() { "(no workspace)".into() } else { ws };
             out.push_str(&format!(" ▾ {}\n", label));
             for p in panes {
-                let parked = if p.parked { " ⏏" } else { "" };
+                let parked = if p.parked {
+                    format!(" {}", parked_glyph())
+                } else {
+                    String::new()
+                };
                 out.push_str(&format!(
                     "    {} {:<7} {:<4}{}\n",
                     status_glyph(p.status),

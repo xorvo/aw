@@ -156,12 +156,26 @@ fn install_pi_writes_extension_files() {
     let env = TestEnv::new();
     let cap = capture(&env, &env.run(Bin::Rust, &["install", "hooks", "--agent", "pi"]));
     assert_eq!(cap.exit, 0, "{}", cap.stderr);
-    let dir = env.home.join(".config/pi/extensions/aw-dash");
-    assert!(dir.join("package.json").is_file());
-    assert!(dir.join("index.ts").is_file());
+    let dir = env.home.join(".pi/agent/extensions/aw-dash");
+    assert!(dir.join("package.json").is_file(), "package.json missing");
+    assert!(dir.join("index.ts").is_file(), "index.ts missing");
     let ts = std::fs::read_to_string(dir.join("index.ts")).unwrap();
-    assert!(ts.contains("aw"));
+    assert!(ts.contains("export default"), "factory pattern missing");
     assert!(ts.contains("agent_start"));
+    assert!(ts.contains("aw hook") || ts.contains("\"hook\""));
+}
+
+#[test]
+fn install_pi_cleans_up_stale_old_path() {
+    let env = TestEnv::new();
+    // Simulate an old install from an earlier version.
+    let stale = env.home.join(".config/pi/extensions/aw-dash");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(stale.join("index.ts"), "// old garbage\n").unwrap();
+    let cap = capture(&env, &env.run(Bin::Rust, &["install", "hooks", "--agent", "pi"]));
+    assert_eq!(cap.exit, 0, "{}", cap.stderr);
+    assert!(!stale.is_dir(), "stale directory should be removed");
+    assert!(env.home.join(".pi/agent/extensions/aw-dash/index.ts").is_file());
 }
 
 // ---- install all ----
@@ -174,5 +188,5 @@ fn install_all_runs_every_step() {
     assert!(env.home.join(".tmux.conf").is_file());
     assert!(env.home.join(".claude/settings.json").is_file());
     assert!(env.home.join(".codex/hooks.json").is_file());
-    assert!(env.home.join(".config/pi/extensions/aw-dash/index.ts").is_file());
+    assert!(env.home.join(".pi/agent/extensions/aw-dash/index.ts").is_file());
 }

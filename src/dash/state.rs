@@ -3,6 +3,7 @@
 //! All writes are atomic (tempfile + rename on the same filesystem).
 //! Reads tolerate missing or malformed files (skip with a warning).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -83,10 +84,23 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// Build a snapshot by merging two sources:
+    ///
+    /// 1. Hook state files at `<state_dir>/panes/*.json` — rows for panes
+    ///    that fired at least one `aw hook` call (full status / prompt /
+    ///    last-event detail).
+    /// 2. The live tmux pane list (sessions matching `aw-*` only) — rows
+    ///    for plain shells, editors, agents that haven't fired a hook yet,
+    ///    or agents we don't have a hook integration for (opencode, etc.).
+    ///
+    /// When both sources name the same pane, the hook state wins; tmux
+    /// data only fills in `session` / `cwd` if missing.
     pub fn load() -> Result<Self> {
-        let dir = panes_dir()?;
         let parked = parked_dir().ok();
-        let mut entries = Vec::new();
+
+        // (1) Read hook state files into a pane-id-keyed map.
+        let mut by_pane: HashMap<String, PaneState> = HashMap::new();
+        let dir = panes_dir()?;
         if let Ok(read) = std::fs::read_dir(&dir) {
             for d in read.flatten() {
                 if d.path().extension().map_or(true, |e| e != "json") {
@@ -96,11 +110,59 @@ impl Snapshot {
                     if let Some(ref park_dir) = parked {
                         s.parked = park_dir.join(&s.pane_id).exists();
                     }
-                    entries.push(s);
+                    by_pane.insert(s.pane_id.clone(), s);
                 }
             }
         }
-        // Stable order: workspace, then pane_id, for snapshot/test stability.
+
+        // (2) Merge live tmux panes from `aw-*` sessions.
+        for tp in crate::dash::tmux::list_panes_with_metadata() {
+            let workspace = match tp.session.strip_prefix("aw-") {
+                Some(w) => w.to_string(),
+                None => continue, // not one of ours
+            };
+            match by_pane.get_mut(&tp.pane_id) {
+                Some(existing) => {
+                    if existing.session.is_empty() {
+                        existing.session = tp.session.clone();
+                    }
+                    if existing.cwd.is_empty() {
+                        existing.cwd = tp.path.clone();
+                    }
+                    if existing.workspace.is_empty() {
+                        existing.workspace = workspace;
+                    }
+                }
+                None => {
+                    let parked_now = parked
+                        .as_ref()
+                        .map(|d| d.join(&tp.pane_id).exists())
+                        .unwrap_or(false);
+                    by_pane.insert(
+                        tp.pane_id.clone(),
+                        PaneState {
+                            schema_version: 1,
+                            pane_id: tp.pane_id,
+                            session: tp.session,
+                            workspace,
+                            cwd: tp.path,
+                            // No hook = we know only what tmux tells us.
+                            // Surface the foreground command as the
+                            // "agent" so users see e.g. `zsh`, `vim`,
+                            // `opencode`, `claude` (pre-first-event).
+                            agent: tp.command,
+                            status: Status::Idle,
+                            last_event: String::new(),
+                            last_activity: 0,
+                            last_prompt: String::new(),
+                            parked: parked_now,
+                        },
+                    );
+                }
+            }
+        }
+
+        let mut entries: Vec<PaneState> = by_pane.into_values().collect();
         entries.sort_by(|a, b| {
             a.workspace
                 .cmp(&b.workspace)

@@ -226,6 +226,11 @@ fn configure_env(cmd: &mut Command, env: &TestEnv) {
         .env("AW_BIN_DIR", &env.bin_dir)
         .env("AW_CONFIG_FILE", &env.config_path)
         .env("AW_STATE_DIR", &env.state_dir)
+        // Insulate the test from any tmux server running on the host: tmux
+        // looks for sockets under `$TMUX_TMPDIR/tmux-<uid>/`. We point at a
+        // fresh sandbox dir, so `tmux list-panes -a` finds no server and
+        // `aw dash` returns only state-file-derived rows.
+        .env("TMUX_TMPDIR", env.tmp.path())
         .env("GIT_AUTHOR_NAME", "test")
         .env("GIT_AUTHOR_EMAIL", "t@e")
         .env("GIT_COMMITTER_NAME", "test")

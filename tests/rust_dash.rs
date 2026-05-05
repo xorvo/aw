@@ -30,6 +30,7 @@ fn run_with_pane(env: &TestEnv, pane_id: &str, args: &[&str], stdin: &str) -> st
         .env("AW_BIN_DIR", &env.bin_dir)
         .env("AW_CONFIG_FILE", &env.config_path)
         .env("AW_STATE_DIR", &env.state_dir)
+        .env("TMUX_TMPDIR", env.tmp.path())
         .env("TMUX_PANE", pane_id)
         .env("AGENT_WORKSPACE_NAME", "test-ws")
         .env("AGENT_WORKSPACE", env.workspaces_dir.join("test-ws"))

@@ -84,72 +84,83 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Build a snapshot by merging two sources:
+    /// Build a snapshot. Authority split:
     ///
-    /// 1. Hook state files at `<state_dir>/panes/*.json` — rows for panes
-    ///    that fired at least one `aw hook` call (full status / prompt /
-    ///    last-event detail).
-    /// 2. The live tmux pane list (sessions matching `aw-*` only) — rows
-    ///    for plain shells, editors, agents that haven't fired a hook yet,
-    ///    or agents we don't have a hook integration for (opencode, etc.).
+    /// - **tmux** is the source of truth for *which panes exist*, *which
+    ///   session they're in*, *cwd*, and *foreground command*. These
+    ///   fields are refreshed from tmux on every load — never trusted
+    ///   from a stale state file.
+    /// - **State files** at `<state_dir>/panes/*.json` enrich live panes
+    ///   with hook-derived data (status, last event, last prompt).
     ///
-    /// When both sources name the same pane, the hook state wins; tmux
-    /// data only fills in `session` / `cwd` if missing.
+    /// State files for panes tmux doesn't know about are **discarded**
+    /// (and deleted as a side effect — auto-gc — so the cache doesn't
+    /// grow unboundedly). This is the fix for stale "dead pane" rows
+    /// that previously persisted until `aw dash gc` ran manually.
+    ///
+    /// When tmux is *unreachable* (no server, command missing), we fall
+    /// back to file-only mode so the dashboard isn't empty just because
+    /// you killed the tmux server. State files won't be auto-deleted in
+    /// this mode — there's no authority to decide they're dead.
     pub fn load() -> Result<Self> {
-        let parked = parked_dir().ok();
+        let parked_dir = parked_dir().ok();
+        let panes_dir = panes_dir()?;
 
-        // (1) Read hook state files into a pane-id-keyed map.
-        let mut by_pane: HashMap<String, PaneState> = HashMap::new();
-        let dir = panes_dir()?;
-        if let Ok(read) = std::fs::read_dir(&dir) {
+        // (1) Read every state file into a pane-id-keyed map. We keep a
+        //     parallel map of pane-id → on-disk path so auto-gc can
+        //     unlink the file later if tmux says the pane is dead.
+        let mut hook_state: HashMap<String, PaneState> = HashMap::new();
+        let mut hook_paths: HashMap<String, std::path::PathBuf> = HashMap::new();
+        if let Ok(read) = std::fs::read_dir(&panes_dir) {
             for d in read.flatten() {
                 if d.path().extension().map_or(true, |e| e != "json") {
                     continue;
                 }
-                if let Ok(mut s) = PaneState::read(&d.path()) {
-                    if let Some(ref park_dir) = parked {
-                        s.parked = park_dir.join(&s.pane_id).exists();
-                    }
-                    by_pane.insert(s.pane_id.clone(), s);
+                if let Ok(s) = PaneState::read(&d.path()) {
+                    hook_paths.insert(s.pane_id.clone(), d.path());
+                    hook_state.insert(s.pane_id.clone(), s);
                 }
             }
         }
 
-        // (2) Merge live tmux panes from `aw-*` sessions.
-        for tp in crate::dash::tmux::list_panes_with_metadata() {
-            let workspace = match tp.session.strip_prefix("aw-") {
-                Some(w) => w.to_string(),
-                None => continue, // not one of ours
-            };
-            match by_pane.get_mut(&tp.pane_id) {
-                Some(existing) => {
-                    if existing.session.is_empty() {
-                        existing.session = tp.session.clone();
-                    }
-                    if existing.cwd.is_empty() {
-                        existing.cwd = tp.path.clone();
-                    }
-                    if existing.workspace.is_empty() {
-                        existing.workspace = workspace;
-                    }
-                }
-                None => {
-                    let parked_now = parked
+        // (2) Ask tmux. Authoritative when reachable.
+        let listing = crate::dash::tmux::list_panes_with_metadata();
+
+        let mut entries = Vec::new();
+        match listing {
+            crate::dash::tmux::PaneListing::Tmux(panes) => {
+                let live_ids: std::collections::HashSet<String> =
+                    panes.iter().map(|p| p.pane_id.clone()).collect();
+
+                // (3) For every live pane in an aw-* session, build a row,
+                //     overlaying hook state when present. tmux fields
+                //     always win over the file's stored values.
+                for tp in panes {
+                    let workspace = match tp.session.strip_prefix("aw-") {
+                        Some(w) => w.to_string(),
+                        None => continue,
+                    };
+                    let parked_now = parked_dir
                         .as_ref()
                         .map(|d| d.join(&tp.pane_id).exists())
                         .unwrap_or(false);
-                    by_pane.insert(
-                        tp.pane_id.clone(),
-                        PaneState {
+                    let row = match hook_state.remove(&tp.pane_id) {
+                        Some(mut s) => {
+                            // Refresh ground-truth fields from tmux; keep
+                            // hook-derived ones (status, last_event,
+                            // last_activity, last_prompt, agent) intact.
+                            s.session = tp.session;
+                            s.workspace = workspace;
+                            s.cwd = tp.path;
+                            s.parked = parked_now;
+                            s
+                        }
+                        None => PaneState {
                             schema_version: 1,
                             pane_id: tp.pane_id,
                             session: tp.session,
                             workspace,
                             cwd: tp.path,
-                            // No hook = we know only what tmux tells us.
-                            // Surface the foreground command as the
-                            // "agent" so users see e.g. `zsh`, `vim`,
-                            // `opencode`, `claude` (pre-first-event).
                             agent: tp.command,
                             status: Status::Idle,
                             last_event: String::new(),
@@ -157,12 +168,34 @@ impl Snapshot {
                             last_prompt: String::new(),
                             parked: parked_now,
                         },
-                    );
+                    };
+                    entries.push(row);
+                }
+
+                // (4) Auto-gc: remove state files that no longer match a
+                //     live pane. Best-effort — failures here are silent
+                //     because the next load will retry.
+                for (pane_id, path) in &hook_paths {
+                    if !live_ids.contains(pane_id) {
+                        let _ = std::fs::remove_file(path);
+                        if let Some(ref pdir) = parked_dir {
+                            let _ = std::fs::remove_file(pdir.join(pane_id));
+                        }
+                    }
+                }
+            }
+            crate::dash::tmux::PaneListing::Unavailable => {
+                // Fall back to file-only. Don't auto-gc — without tmux's
+                // word we can't tell live from dead.
+                for (_, mut s) in hook_state.drain() {
+                    if let Some(ref pdir) = parked_dir {
+                        s.parked = pdir.join(&s.pane_id).exists();
+                    }
+                    entries.push(s);
                 }
             }
         }
 
-        let mut entries: Vec<PaneState> = by_pane.into_values().collect();
         entries.sort_by(|a, b| {
             a.workspace
                 .cmp(&b.workspace)

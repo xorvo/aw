@@ -52,10 +52,25 @@ pub struct PaneInfo {
     pub path: String,
 }
 
-/// Enumerate every pane on the local tmux server with metadata. Empty if
-/// tmux isn't running. Tabs separate fields and don't appear in any of the
-/// fields we read, so a simple split is safe.
-pub fn list_panes_with_metadata() -> Vec<PaneInfo> {
+/// Result of asking tmux for the live pane list. The distinction between
+/// "tmux is healthy and there are zero panes" and "tmux didn't answer at
+/// all" matters: the snapshot loader uses tmux as the authoritative source
+/// for which panes exist, so it must not treat an unreachable tmux as
+/// "everything is dead."
+#[derive(Debug, Clone)]
+pub enum PaneListing {
+    /// We got a successful response. The Vec is the truth: it contains
+    /// every pane on the local tmux server (possibly zero).
+    Tmux(Vec<PaneInfo>),
+    /// tmux command failed or wasn't on PATH. Caller should fall back to
+    /// file-only state and accept the staleness risk.
+    Unavailable,
+}
+
+/// Enumerate every pane on the local tmux server with metadata. Tabs
+/// separate fields and don't appear in any of the fields we read, so a
+/// simple split is safe.
+pub fn list_panes_with_metadata() -> PaneListing {
     let out = Command::new("tmux")
         .args([
             "list-panes",
@@ -66,11 +81,17 @@ pub fn list_panes_with_metadata() -> Vec<PaneInfo> {
         .stderr(Stdio::null())
         .output();
     match out {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .filter_map(parse_pane_line)
-            .collect(),
-        _ => Vec::new(),
+        Ok(o) if o.status.success() => PaneListing::Tmux(
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter_map(parse_pane_line)
+                .collect(),
+        ),
+        // Distinguish "tmux not running" (exit non-zero with the typical
+        // "no server running" message on stderr) from "tmux missing": both
+        // collapse to Unavailable here. Snapshot::load handles both the
+        // same way (file-only fallback).
+        _ => PaneListing::Unavailable,
     }
 }
 

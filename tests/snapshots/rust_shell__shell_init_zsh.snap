@@ -1,0 +1,114 @@
+---
+source: tests/rust_shell.rs
+expression: "shell_init(\"zsh\")"
+---
+# >>> aw shell-init (zsh) >>>
+# Wrapper that intercepts subcommands needing in-shell side effects.
+aw() {
+  case "${1-}" in
+    start|enter|open)
+      shift
+      local __aw_script
+      __aw_script=$(command aw _shell-start "$@") || return $?
+      eval "$__aw_script"
+      ;;
+    *)
+      command aw "$@"
+      ;;
+  esac
+}
+
+# Auto-activation: when cwd changes into (or out of) a workspace, export
+# AGENT_WORKSPACE* and source hooks. Idempotent — safe to re-source.
+__aw_chpwd() {
+  local ws
+  ws=$(command aw _detect-workspace "$PWD" 2>/dev/null) || return 0
+  if [[ -z $ws ]]; then
+    unset AGENT_WORKSPACE AGENT_WORKSPACE_NAME
+    return 0
+  fi
+  export AGENT_WORKSPACE="$ws"
+  export AGENT_WORKSPACE_NAME="${ws:t}"
+  local h
+  for h in "$HOME/.agent-workspaces/hooks.d"/*.sh(N) "$ws/.agent-workspace/hooks.d"/*.sh(N); do
+    [[ -r $h ]] && source "$h"
+  done
+}
+typeset -ag chpwd_functions
+chpwd_functions+=(__aw_chpwd)
+__aw_chpwd
+
+# ---------- Tab completion ----------
+# Hand-rolled because clap_complete's static output can't reach into your
+# config / workspaces directory. We delegate to internal `aw _list-*`
+# subcommands so workspace names update as you create / delete them.
+__aw_workspaces() {
+  local -a ws
+  ws=("${(@f)$(command aw _list-workspaces 2>/dev/null)}")
+  [[ ${#ws} -gt 0 ]] && _describe -t workspaces 'workspace' ws
+}
+__aw_bases() {
+  local -a bs
+  bs=("${(@f)$(command aw _list-bases 2>/dev/null)}")
+  [[ ${#bs} -gt 0 ]] && _describe -t bases 'base' bs
+}
+_aw() {
+  local -a top
+  top=(
+    'init:Initialize base workspace'
+    'create:Create a new workspace from a base'
+    'list:List all workspaces' 'ls:List all workspaces'
+    'start:Enter workspace' 'enter:Enter workspace' 'open:Enter workspace'
+    'delete:Delete a workspace' 'rm:Delete a workspace'
+    'config:Show configuration file location'
+    'edit-config:Open config in editor'
+    'edit-base:Open a base workspace in editor'
+    'sync:Sync repos in current workspace'
+    'open-home:Open install dir'
+    'dash:Tmux-based agent dashboard'
+    'hook:Agent state writer (called by hooks)'
+    'shell-init:Print shell hook for eval'
+    'completions:Print shell completions'
+    'install:Interactive setup helpers'
+  )
+  if (( CURRENT == 2 )); then
+    _describe 'subcommand' top
+    return
+  fi
+  case ${words[2]} in
+    (start|enter|open|delete|rm)
+      __aw_workspaces ;;
+    (edit-base)
+      __aw_bases ;;
+    (init)
+      if (( CURRENT == 3 )); then __aw_bases; fi ;;
+    (create)
+      _arguments '--base[base name]:base:__aw_bases' '*::name:' ;;
+    (dash)
+      if (( CURRENT == 3 )); then
+        local -a sub=(sidebar status-line next-ready park json gc)
+        _describe 'dash subcommand' sub
+      fi ;;
+    (install)
+      if (( CURRENT == 3 )); then
+        local -a sub=(shell hooks tmux-bindings all)
+        _describe 'install subcommand' sub
+      elif [[ ${words[3]} == hooks ]]; then
+        _arguments '--agent[which agent to wire]:agent:(claude codex pi all)'
+      elif [[ ${words[3]} == shell ]]; then
+        _arguments '--shell[which shell rc to write]:shell:(zsh bash fish)'
+      fi ;;
+    (shell-init|completions)
+      if (( CURRENT == 3 )); then
+        local -a shells=(zsh bash fish)
+        _describe 'shell' shells
+      fi ;;
+    (hook)
+      _arguments \
+        '--agent[which agent fired]:agent:(claude codex pi)' \
+        '--event[event name]:event:' \
+        '--prompt[prompt text]:prompt:' ;;
+  esac
+}
+compdef _aw aw
+# <<< aw shell-init (zsh) <<<

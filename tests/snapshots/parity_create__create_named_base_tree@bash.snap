@@ -1,0 +1,23 @@
+---
+source: tests/parity_create.rs
+expression: manifest
+---
+entries:
+  ".agent-workspace":
+    kind: dir
+  ".agent-workspace/base":
+    kind: file
+    sha256: 9c5955fc99a60b8f6dee6cf582c4420d91e1b3e2a201f532c91e2cbdfce7fa51
+    size: 4
+  ".agent-workspace/name":
+    kind: file
+    sha256: bb9f74f806b18891c7979256ad4f646f5f605a7a11e7489d101627c9ffaa458a
+    size: 7
+  dev-repo:
+    kind: dir
+  dev-repo/.git:
+    kind: dir
+  dev-repo/README.md:
+    kind: file
+    sha256: a40221ba4e460502b59d74bc79158baa3857ecdea7cec04cd3484f110271f6ab
+    size: 11

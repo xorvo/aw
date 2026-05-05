@@ -1,0 +1,29 @@
+---
+source: tests/parity_help.rs
+expression: stdout
+---
+Manage isolated workspaces for AI agents
+
+Usage: aw <COMMAND>
+
+Commands:
+  init         Initialize base workspace (default: 'default')
+  create       Create a new workspace from a base
+  list         List all workspaces
+  start        Enter workspace (tmux session if available)
+  delete       Delete a workspace
+  config       Show configuration file location
+  edit-config  Open config file in default editor
+  edit-base    Open base workspace directory in editor
+  sync         Sync all repos in current workspace with remote
+  open-home    Open tool home directory in editor
+  dash         Tmux-based dashboard for live agent state
+  hook         Write an agent state transition (called by Claude/Codex/pi hooks)
+  shell-init   Print shell hook for eval (e.g. `eval "$(aw shell-init zsh)"`)
+  completions  Print shell completions
+  install      Interactive setup helpers
+  self         Self-management: check for updates, upgrade in place
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version

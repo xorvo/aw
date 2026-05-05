@@ -1,12 +1,50 @@
 # Agent Workspace (aw)
 
-A helper to setup sub-workspaces in your local environment which will be optimized for working with AI Agents like [Claude Code](https://www.anthropic.com/claude-code).
+A helper to setup sub-workspaces in your local environment optimized for
+AI agents like [Claude Code](https://www.anthropic.com/claude-code), with
+a tmux-based dashboard ([`aw dash`](docs/dash.md)) for live agent state.
 
 ## Installation
 
+### Pre-built binary (macOS, recommended)
+
+Each release ships pre-built binaries for `aarch64-apple-darwin` (Apple
+Silicon) and `x86_64-apple-darwin` (Intel). Grab the latest from the
+[Releases page](https://github.com/xorvo/aw/releases) and:
+
 ```bash
-./install.sh
+# Replace <triple> with aarch64-apple-darwin or x86_64-apple-darwin
+TAG=v1.0.0
+TRIPLE=aarch64-apple-darwin
+curl -fsSL "https://github.com/xorvo/aw/releases/download/${TAG}/aw-${TAG}-${TRIPLE}.tar.gz" \
+  | tar -xz -C ~/.local/bin
+xattr -d com.apple.quarantine ~/.local/bin/aw 2>/dev/null   # one-time, optional
+aw install all                      # shell hook + agent hooks + tmux bindings
 ```
+
+After install, `aw self update` keeps you on the latest release without
+re-running the curl one-liner.
+
+### From source
+
+```bash
+./install.sh                        # builds the Rust binary, installs to ~/.local/bin
+aw install all
+```
+
+Requires a Rust toolchain (https://rustup.rs) at install time only — the
+shipped binary has no runtime dependencies beyond `git` and (optionally)
+`tmux`.
+
+### Upgrades
+
+```bash
+aw self check                       # is there a newer release?
+aw self update                      # upgrade in place
+```
+
+> Migrating from a previous bash-based install? See
+> [`docs/migration.md`](docs/migration.md).
 
 This will:
 
@@ -80,7 +118,25 @@ aw list                  # List all workspaces
 aw delete my-feature     # Delete a workspace
 ```
 
-### 5. Quick Access Commands
+### 5. Dashboard
+
+`aw dash` opens a tmux popup TUI showing every active agent across all your
+workspaces — what they're doing, who's waiting for input, and one-keystroke
+jump to any pane:
+
+```bash
+aw dash                  # full-screen popup (or bind to prefix + a)
+aw dash sidebar          # narrow always-on side pane
+aw dash status-line      # one-liner for tmux's status-right
+aw dash next-ready       # jump to the oldest waiting agent
+aw dash json             # snapshot to stdout (for scripts)
+```
+
+State comes from agent hooks (Claude Code, Codex, pi) wired by
+`aw install hooks --agent <name>`. See [`docs/dash.md`](docs/dash.md) for
+the full key map, hook contract, and state schema.
+
+### 6. Quick Access Commands
 
 ```bash
 aw edit-config           # Open config file in editor

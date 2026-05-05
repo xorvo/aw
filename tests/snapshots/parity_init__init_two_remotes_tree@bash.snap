@@ -1,0 +1,13 @@
+---
+source: tests/parity_init.rs
+expression: manifest
+---
+entries:
+  ".agent-workspace":
+    kind: dir
+  ".agent-workspace/repo-cache":
+    kind: dir
+  ".agent-workspace/repo-cache/alpha.git":
+    kind: dir
+  ".agent-workspace/repo-cache/beta.git":
+    kind: dir

@@ -1,0 +1,8 @@
+---
+source: tests/parity_list.rs
+expression: out
+---
+📂 Workspaces in: <WORKSPACES_DIR>
+
+  No workspaces found
+  💡 Run 'aw create <name>' to create your first workspace

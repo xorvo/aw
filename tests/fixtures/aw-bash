@@ -1,0 +1,783 @@
+#!/bin/bash
+# vim: ft=bash
+#
+# FROZEN BASH `aw` CLI — TEST REFERENCE
+#
+# This file is a verbatim extract of the bash CLI embedded in install.sh
+# at commit 3ba2893 (the heredoc body, lines 34-801; the original shebang on
+# line 33 is dropped because we re-emit one above). It is the spec the Rust
+# rewrite must match, exercised by the parity test suite under tests/parity/.
+#
+# DO NOT EDIT. If the upstream bash CLI changes, regenerate by running:
+#   sed -n '34,801p' install.sh > tests/fixtures/aw-bash.body \
+#     && { printf '#!/bin/bash\n# (header...)\n\n'; cat tests/fixtures/aw-bash.body; } > tests/fixtures/aw-bash \
+#     && chmod +x tests/fixtures/aw-bash
+#
+set -e
+
+# Directory structure - clear and consistent
+AW_INSTALL_DIR="${AW_INSTALL_DIR:-$HOME/.agent-workspaces}"                    # Tool home directory
+AW_WORKSPACES_DIR="${AW_WORKSPACES_DIR:-$HOME/agent-workspaces}" # User workspaces directory
+AW_CONFIG_FILE="${AW_CONFIG_FILE:-$AW_INSTALL_DIR/config.yaml}"         # Config file location
+AW_BASE_DIR="$AW_INSTALL_DIR/base"                                      # Base workspaces directory
+
+print_help() {
+    echo "aw - Manage isolated workspaces for AI agents"
+    echo ""
+    echo "Usage:"
+    echo "  aw <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  init [base-name]        Initialize base workspace (default: 'default')"
+    echo "  create <name> [options] Create a new workspace from base"
+    echo "    --base <base-name>    Use specific base workspace (default: 'default')"
+    echo "  list                    List all workspaces"
+    echo "  open <name> [options]  Enter workspace (tmux session if available)"
+    echo "    --no-tmux             Open in a plain shell instead of tmux"
+    echo "  delete <name>           Delete a workspace"
+    echo "  config                  Show configuration file location"
+    echo "  edit-config             Open config file in default editor"
+    echo "  edit-base <base-name>   Open base workspace directory in editor"
+    echo "  sync                    Sync all repos in current workspace with remote"
+    echo "  open-home               Open tool home directory in editor"
+    echo "  help                    Show this help message"
+    echo ""
+    echo "Environment Variables:"
+    echo "  AW_INSTALL_DIR              Tool home directory (default: ~/.agent-workspaces)"
+    echo "  AW_WORKSPACES_DIR    Where workspaces are created (default: ~/agent-workspaces)"
+    echo "  AW_CONFIG_FILE       Config file path (default: \$AW_INSTALL_DIR/config.yaml)"
+    echo "  AW_BIN_DIR           Where 'aw' command is installed (default: ~/.local/bin)"
+}
+
+check_dependencies() {
+    if ! command -v yq &> /dev/null; then
+        echo "❌ yq is required but not installed. Please install it:"
+        echo "  brew install yq  # macOS"
+        echo "  apt-get install yq  # Ubuntu/Debian"
+        exit 1
+    fi
+}
+
+# Parse a local_files entry, supporting "source -> dest" syntax
+# Sets: _src (expanded source path), _dest_name (destination name)
+parse_local_file_entry() {
+    local entry="$1"
+    if [[ "$entry" == *" -> "* ]]; then
+        _src="${entry%% -> *}"
+        _dest_name="${entry##* -> }"
+    else
+        _src="$entry"
+        _dest_name=""
+    fi
+    # Expand tilde
+    _src="${_src/#\~/$HOME}"
+}
+
+# Copy a local file/directory to a target directory
+# Usage: copy_local_entry <entry> <target_dir>
+copy_local_entry() {
+    local entry="$1"
+    local target_dir="$2"
+
+    parse_local_file_entry "$entry"
+    local src="$_src"
+
+    if [ -d "$src" ]; then
+        local dest_name="${_dest_name:-$(basename "$src")}"
+        local dest="$target_dir/$dest_name"
+        echo "⏳ Copying $(basename "$src") -> $dest_name..."
+
+        # Create parent directories if destination has nested path
+        mkdir -p "$(dirname "$dest")"
+
+        local copy_start=$(date +%s)
+
+        # Try optimized copy methods
+        if cp -c -R "$src" "$dest" 2>/dev/null; then
+            local copy_method="copy-on-write"
+        elif cp --reflink=auto -R "$src" "$dest" 2>/dev/null; then
+            local copy_method="reflink"
+        else
+            cp -R "$src" "$dest"
+            local copy_method="standard copy"
+        fi
+
+        local copy_end=$(date +%s)
+        local copy_duration=$((copy_end - copy_start))
+
+        echo "   ✓ Copied using $copy_method in ${copy_duration}s"
+    elif [ -f "$src" ]; then
+        local dest_name="${_dest_name:-$(basename "$src")}"
+        local dest="$target_dir/$dest_name"
+        mkdir -p "$(dirname "$dest")"
+        echo "📄 Copying $(basename "$src") -> $dest_name"
+        cp "$src" "$dest"
+    else
+        echo "⚠️  Warning: Local path not found: $entry"
+    fi
+}
+
+init_base_workspace() {
+    local base_name="${1:-default}"
+    local base_workspace="$AW_BASE_DIR/$base_name"
+
+    if [ ! -f "$AW_CONFIG_FILE" ]; then
+        echo "❌ Config file not found at $AW_CONFIG_FILE"
+        exit 1
+    fi
+
+    # Check if the base configuration exists
+    base_config=$(yq -r ".${base_name}" "$AW_CONFIG_FILE" 2>/dev/null)
+    if [ "$base_config" = "null" ] || [ -z "$base_config" ]; then
+        echo "❌ Base configuration '${base_name}' not found in $AW_CONFIG_FILE"
+        echo "Available bases:"
+        yq -r 'keys | .[]' "$AW_CONFIG_FILE" | grep -v "^agent_config$" | grep -v "^workspace_defaults$" | sed 's/^/  • /'
+        exit 1
+    fi
+
+    echo "🔧 Initializing base workspace: $base_name"
+    echo "📂 Location: $base_workspace"
+    echo ""
+
+    local start_time=$(date +%s)
+
+    # Create base directory
+    mkdir -p "$base_workspace"
+
+    # Clone repositories as bare mirrors for caching
+    local repo_cache="$base_workspace/.agent-workspace/repo-cache"
+    repos=($(yq -r ".${base_name}.repos[]" "$AW_CONFIG_FILE" 2>/dev/null))
+
+    if [ ${#repos[@]} -gt 0 ]; then
+        mkdir -p "$repo_cache"
+        echo "📦 Caching ${#repos[@]} repositories in parallel..."
+        echo ""
+
+        local pids=()
+        local pid_repos=()
+        local log_dir=$(mktemp -d)
+
+        for repo in "${repos[@]}"; do
+            repo_name=$(basename "$repo" .git)
+            local log_file="$log_dir/$repo_name.log"
+
+            (
+                if [ -d "$repo_cache/${repo_name}.git" ]; then
+                    echo "update" > "$log_file.type"
+                    git -C "$repo_cache/${repo_name}.git" fetch --all --prune > "$log_file" 2>&1
+                else
+                    echo "clone" > "$log_file.type"
+                    git clone --mirror "$repo" "$repo_cache/${repo_name}.git" > "$log_file" 2>&1
+                fi
+            ) &
+            pids+=($!)
+            pid_repos+=("$repo_name")
+        done
+
+        # Wait for all and report results
+        for i in "${!pids[@]}"; do
+            local repo_name="${pid_repos[$i]}"
+            local log_file="$log_dir/$repo_name.log"
+            if wait "${pids[$i]}"; then
+                local op=$(cat "$log_file.type" 2>/dev/null)
+                if [ "$op" = "update" ]; then
+                    echo "   ✓ $repo_name cache updated"
+                else
+                    echo "   ✓ $repo_name cached"
+                fi
+            else
+                echo "   ❌ Failed to cache $repo_name"
+            fi
+        done
+        rm -rf "$log_dir"
+        echo ""
+    fi
+
+    # Ensure .agent-workspace directory exists
+    mkdir -p "$base_workspace/.agent-workspace"
+    echo ""
+    echo "💡 Tip: Add files to $base_workspace/ (e.g. .claude/, CLAUDE.md, docs/)"
+    echo "   They will be copied to the root of every new workspace created from this base."
+    echo ""
+
+    # Calculate total time
+    local end_time=$(date +%s)
+    local total_duration=$((end_time - start_time))
+
+    echo "📈 Initialization Summary:"
+    echo "   • Total time: ${total_duration}s"
+    echo ""
+    echo "✅ Base workspace '$base_name' initialized at $base_workspace"
+}
+
+create_workspace() {
+    local name="$1"
+    local base_name="$2"
+    local base_workspace="$AW_BASE_DIR/$base_name"
+
+    if [ ! -d "$base_workspace" ]; then
+        echo "❌ Base workspace '$base_name' not found. Run 'aw init $base_name' first."
+        exit 1
+    fi
+
+    local workspace_dir="$AW_WORKSPACES_DIR/$name"
+
+    if [ -d "$workspace_dir" ]; then
+        echo "❌ Workspace '$name' already exists at $workspace_dir"
+        exit 1
+    fi
+
+    echo "🏗️  Creating workspace: $name"
+    echo "📂 From base: $base_name"
+    echo "📍 Location: $workspace_dir"
+    echo ""
+
+    local start_time=$(date +%s)
+
+    mkdir -p "$workspace_dir"
+
+    # Create .agent-workspace directory and metadata files early
+    # This ensures the workspace is registered even if subsequent operations fail
+    mkdir -p "$workspace_dir/.agent-workspace"
+    echo "$name" > "$workspace_dir/.agent-workspace/name"
+    echo "$base_name" > "$workspace_dir/.agent-workspace/base"
+    date > "$workspace_dir/.agent-workspace/created"
+
+    # Ensure AGENTS.md exists in base workspace (references CLAUDE.md)
+    if [ -f "$base_workspace/CLAUDE.md" ] && [ ! -f "$base_workspace/AGENTS.md" ]; then
+        echo "@CLAUDE.md" > "$base_workspace/AGENTS.md"
+    fi
+
+    # Copy base workspace root files first (everything except .agent-workspace/)
+    # CLAUDE.md and AGENTS.md are symlinked instead of copied so edits propagate
+    local has_base_files=false
+    for item in "$base_workspace"/* "$base_workspace"/.[!.]* "$base_workspace"/..?*; do
+        [ -e "$item" ] || continue
+        [ "$(basename "$item")" = ".agent-workspace" ] && continue
+        has_base_files=true
+        break
+    done
+
+    if [ "$has_base_files" = true ]; then
+        echo "📋 Copying base workspace files..."
+        for item in "$base_workspace"/* "$base_workspace"/.[!.]* "$base_workspace"/..?*; do
+            [ -e "$item" ] || continue
+            local item_name=$(basename "$item")
+            [ "$item_name" = ".agent-workspace" ] && continue
+            if [ "$item_name" = "CLAUDE.md" ] || [ "$item_name" = "AGENTS.md" ]; then
+                ln -sf "$item" "$workspace_dir/$item_name"
+            else
+                cp -R "$item" "$workspace_dir/"
+            fi
+        done
+        echo ""
+    fi
+
+    # Clone repositories using cached bare mirrors as reference
+    local repo_cache="$base_workspace/.agent-workspace/repo-cache"
+    repos=($(yq -r ".${base_name}.repos[]" "$AW_CONFIG_FILE" 2>/dev/null))
+
+    if [ ${#repos[@]} -gt 0 ]; then
+        echo "🔄 Updating cached repositories and cloning in parallel..."
+        echo ""
+
+        local pids=()
+        local pid_repos=()
+        local log_dir=$(mktemp -d)
+        local clone_start=$(date +%s)
+
+        for repo in "${repos[@]}"; do
+            repo_name=$(basename "$repo" .git)
+            local log_file="$log_dir/$repo_name.log"
+
+            (
+                # Update the bare mirror cache first
+                if [ -d "$repo_cache/${repo_name}.git" ]; then
+                    git -C "$repo_cache/${repo_name}.git" fetch --all --prune > "$log_file.cache" 2>&1
+                fi
+
+                # Clone using the cache as reference to save bandwidth and time
+                if [ -d "$repo_cache/${repo_name}.git" ]; then
+                    git clone --reference-if-able "$repo_cache/${repo_name}.git" "$repo" "$workspace_dir/$repo_name" > "$log_file" 2>&1
+                else
+                    git clone "$repo" "$workspace_dir/$repo_name" > "$log_file" 2>&1
+                fi
+            ) &
+            pids+=($!)
+            pid_repos+=("$repo_name")
+        done
+
+        # Wait for all and report results
+        for i in "${!pids[@]}"; do
+            local repo_name="${pid_repos[$i]}"
+            if wait "${pids[$i]}"; then
+                echo "   ✓ Cloned $repo_name"
+            else
+                echo "   ❌ Failed to clone $repo_name"
+                [ -f "$log_dir/$repo_name.log" ] && cat "$log_dir/$repo_name.log" | tail -5
+            fi
+        done
+
+        local clone_end=$(date +%s)
+        local clone_duration=$((clone_end - clone_start))
+        echo ""
+        echo "   Cloned ${#repos[@]} repos in ${clone_duration}s"
+
+        rm -rf "$log_dir"
+    fi
+
+    # Copy local files (supports "source -> dest" syntax)
+    # These are copied fresh from source and may overwrite base files
+    local local_file_count=0
+    local local_file_entries=()
+    while IFS= read -r entry; do
+        [ -n "$entry" ] && local_file_entries+=("$entry")
+    done < <(yq -r ".${base_name}.local_files[]" "$AW_CONFIG_FILE" 2>/dev/null)
+    local_file_count=${#local_file_entries[@]}
+
+    if [ $local_file_count -gt 0 ]; then
+        echo "📁 Copying $local_file_count local directories/files..."
+        echo ""
+
+        for entry in "${local_file_entries[@]}"; do
+            copy_local_entry "$entry" "$workspace_dir"
+        done
+        echo ""
+    fi
+
+    # Calculate total time
+    local end_time=$(date +%s)
+    local total_duration=$((end_time - start_time))
+
+    # Show summary
+    echo "📈 Creation Summary:"
+    echo "   • Total time: ${total_duration}s"
+    echo ""
+    echo "✅ Workspace '$name' created at $workspace_dir"
+    echo ""
+    echo "To start working in the workspace:"
+    echo "  aw open $name"
+}
+
+list_workspaces() {
+    echo "📂 Workspaces in: $AW_WORKSPACES_DIR"
+    echo ""
+
+    local workspace_count=0
+    if [ ! -d "$AW_WORKSPACES_DIR" ]; then
+        echo "  No workspaces directory found"
+        return
+    fi
+
+    # Get active tmux sessions once
+    local tmux_sessions=""
+    if command -v tmux &> /dev/null; then
+        tmux_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+    fi
+
+    for dir in "$AW_WORKSPACES_DIR"/*; do
+        if [ -d "$dir" ] && [ -f "$dir/.agent-workspace/name" ]; then
+            name=$(basename "$dir")
+            created=$(cat "$dir/.agent-workspace/created" 2>/dev/null || echo "unknown")
+            base=$(cat "$dir/.agent-workspace/base" 2>/dev/null || echo "default")
+            if echo "$tmux_sessions" | grep -q "^aw-${name}$"; then
+                printf "  \033[32m●\033[0m %s (base: %s, created: %s)\n" "$name" "$base" "$created"
+            else
+                echo "  • $name (base: $base, created: $created)"
+            fi
+            workspace_count=$((workspace_count + 1))
+        fi
+    done
+
+    if [ $workspace_count -eq 0 ]; then
+        echo "  No workspaces found"
+        echo "  💡 Run 'aw create <name>' to create your first workspace"
+    fi
+}
+
+start_workspace() {
+    local name=""
+    # Default to tmux if available
+    local use_tmux=false
+    if command -v tmux &> /dev/null; then
+        use_tmux=true
+    fi
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --tmux)
+                use_tmux=true
+                shift
+                ;;
+            --no-tmux)
+                use_tmux=false
+                shift
+                ;;
+            *)
+                name="$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [ -z "$name" ]; then
+        echo "❌ Please specify a workspace name"
+        exit 1
+    fi
+
+    local workspace_dir="$AW_WORKSPACES_DIR/$name"
+    if [ ! -d "$workspace_dir" ]; then
+        echo "❌ Workspace '$name' not found"
+        echo "Available workspaces:"
+        list_workspaces
+        exit 1
+    fi
+
+    echo "🎯 Entering workspace: $name"
+    echo "📂 Location: $workspace_dir"
+
+    # Export environment variables
+    export AGENT_WORKSPACE="$workspace_dir"
+    export AGENT_WORKSPACE_NAME="$name"
+
+    # Source workspace hooks (hooks.d scripts can set up command wrappers, env vars, etc.)
+    local hooks_dir="$workspace_dir/.agent-workspace/hooks.d"
+    local global_hooks_dir="$AW_INSTALL_DIR/hooks.d"
+    if [ -d "$global_hooks_dir" ]; then
+        for hook in "$global_hooks_dir"/*.sh; do
+            [ -f "$hook" ] && source "$hook"
+        done
+    fi
+    if [ -d "$hooks_dir" ]; then
+        for hook in "$hooks_dir"/*.sh; do
+            [ -f "$hook" ] && source "$hook"
+        done
+    fi
+
+    if [ "$use_tmux" = true ]; then
+        local session_name="aw-$name"
+
+        if tmux has-session -t "$session_name" 2>/dev/null; then
+            echo "⚠️  Tmux session '$session_name' already exists"
+            read -p "Attach to existing session? (y/n) " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                tmux attach -t "$session_name"
+            else
+                echo "Creating new session with suffix..."
+                session_name="${session_name}-$$"
+                tmux new-session -s "$session_name" -c "$workspace_dir"
+            fi
+        else
+            echo "Creating tmux session: $session_name"
+            tmux new-session -s "$session_name" -c "$workspace_dir"
+        fi
+    else
+        cd "$workspace_dir"
+        echo ""
+        echo "✅ Workspace activated! You're now in: $workspace_dir"
+        echo ""
+        exec $SHELL
+    fi
+}
+
+handle_create_command() {
+    local name=""
+    local base="default"
+    
+    # Parse arguments with flexible positioning
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --base|-b)
+                if [[ $# -lt 2 ]]; then
+                    echo "❌ --base option requires a value"
+                    exit 1
+                fi
+                base="$2"
+                shift 2
+                ;;
+            -*)
+                echo "❌ Unknown option: $1"
+                exit 1
+                ;;
+            *)
+                if [ -z "$name" ]; then
+                    name="$1"
+                else
+                    echo "❌ Multiple workspace names provided: '$name' and '$1'"
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [ -z "$name" ]; then
+        echo "❌ Please specify a workspace name"
+        echo "Usage: aw create <name> [--base <base-name>]"
+        echo "   or: aw create [--base <base-name>] <name>"
+        exit 1
+    fi
+
+    create_workspace "$name" "$base"
+}
+
+delete_workspace() {
+    local name="$1"
+    local workspace_dir="$AW_WORKSPACES_DIR/$name"
+
+    if [ ! -d "$workspace_dir" ]; then
+        echo "❌ Workspace '$name' not found"
+        exit 1
+    fi
+
+    echo "⚠️  This will permanently delete workspace: $name"
+    echo "📂 Location: $workspace_dir"
+    read -p "Are you sure? (y/N) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Cancelled"
+        exit 0
+    fi
+
+    echo "🗑️  Deleting workspace..."
+    rm -rf "$workspace_dir"
+    echo "✅ Workspace '$name' deleted"
+}
+
+show_config() {
+    echo "📋 Configuration file: $AW_CONFIG_FILE"
+    if [ -f "$AW_CONFIG_FILE" ]; then
+        echo "✓ File exists"
+        echo ""
+        echo "Available base configurations:"
+        yq -r 'keys | .[]' "$AW_CONFIG_FILE" | grep -v "^agent_config$" | grep -v "^workspace_defaults$" | sed 's/^/  • /'
+    else
+        echo "❌ File not found"
+    fi
+}
+
+edit_config() {
+    local editor=""
+
+    # Check for available editors
+    if command -v cursor &> /dev/null; then
+        editor="cursor"
+    elif command -v code &> /dev/null; then
+        editor="code"
+    elif command -v nvim &> /dev/null; then
+        editor="nvim"
+    elif command -v vim &> /dev/null; then
+        editor="vim"
+    elif command -v nano &> /dev/null; then
+        editor="nano"
+    else
+        echo "❌ No suitable editor found"
+        exit 1
+    fi
+
+    echo "📝 Opening config with $editor..."
+    $editor "$AW_CONFIG_FILE"
+}
+
+edit_base() {
+    local base_name="${1:-default}"
+    local base_dir="$AW_BASE_DIR/$base_name"
+
+    if [ ! -d "$base_dir" ]; then
+        echo "❌ Base workspace '$base_name' not found"
+        echo "Available bases:"
+        ls -1 "$AW_BASE_DIR" 2>/dev/null | sed 's/^/  • /'
+        exit 1
+    fi
+
+    # Try to open with preferred editors
+    if command -v cursor &> /dev/null; then
+        echo "📝 Opening base workspace with Cursor..."
+        cursor "$base_dir"
+    elif command -v code &> /dev/null; then
+        echo "📝 Opening base workspace with VS Code..."
+        code "$base_dir"
+    elif [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ] || [ "$(uname)" = "Darwin" ]; then
+        echo "📂 Opening base workspace in file manager..."
+        if [ "$(uname)" = "Darwin" ]; then
+            open "$base_dir"
+        elif command -v xdg-open &> /dev/null; then
+            xdg-open "$base_dir"
+        fi
+    else
+        echo "📂 Base workspace location: $base_dir"
+    fi
+}
+
+sync_workspace() {
+    local workspace_dir=""
+
+    # Detect current workspace from environment or working directory
+    if [ -n "$AGENT_WORKSPACE" ] && [ -d "$AGENT_WORKSPACE/.agent-workspace" ]; then
+        workspace_dir="$AGENT_WORKSPACE"
+    elif [ -f ".agent-workspace/name" ]; then
+        workspace_dir="$(pwd)"
+    else
+        # Walk up to find a workspace root
+        local dir="$(pwd)"
+        while [ "$dir" != "/" ]; do
+            if [ -f "$dir/.agent-workspace/name" ]; then
+                workspace_dir="$dir"
+                break
+            fi
+            dir="$(dirname "$dir")"
+        done
+    fi
+
+    if [ -z "$workspace_dir" ]; then
+        echo "❌ Not inside a workspace. Navigate to a workspace or use 'aw open <name>' first."
+        exit 1
+    fi
+
+    local ws_name=$(cat "$workspace_dir/.agent-workspace/name" 2>/dev/null || basename "$workspace_dir")
+    echo "🔄 Syncing repos in workspace: $ws_name"
+    echo "📂 $workspace_dir"
+    echo ""
+
+    local synced=0
+    local failed=0
+    local skipped=0
+
+    for dir in "$workspace_dir"/*/; do
+        [ -d "$dir/.git" ] || continue
+        local repo_name=$(basename "$dir")
+
+        # Determine the default branch
+        local default_branch
+        default_branch=$(git -C "$dir" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')
+        if [ -z "$default_branch" ]; then
+            # Fallback: check for common branch names
+            for candidate in main master; do
+                if git -C "$dir" show-ref --verify --quiet "refs/remotes/origin/$candidate" 2>/dev/null; then
+                    default_branch="$candidate"
+                    break
+                fi
+            done
+        fi
+
+        if [ -z "$default_branch" ]; then
+            echo "  ⚠️  $repo_name: could not determine default branch, skipping"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        # Fetch latest from remote
+        if ! git -C "$dir" fetch origin "$default_branch" --quiet 2>/dev/null; then
+            echo "  ❌ $repo_name: fetch failed"
+            failed=$((failed + 1))
+            continue
+        fi
+
+        local local_ref="refs/heads/$default_branch"
+        local remote_ref="refs/remotes/origin/$default_branch"
+
+        # Check if local branch exists
+        if ! git -C "$dir" show-ref --verify --quiet "$local_ref" 2>/dev/null; then
+            echo "  ⚠️  $repo_name: local branch '$default_branch' not found, skipping"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        local local_sha=$(git -C "$dir" rev-parse "$local_ref")
+        local remote_sha=$(git -C "$dir" rev-parse "$remote_ref")
+
+        if [ "$local_sha" = "$remote_sha" ]; then
+            echo "  ✓ $repo_name ($default_branch): already up to date"
+            synced=$((synced + 1))
+            continue
+        fi
+
+        # Check if fast-forward is possible
+        if ! git -C "$dir" merge-base --is-ancestor "$local_ref" "$remote_ref" 2>/dev/null; then
+            echo "  ⚠️  $repo_name ($default_branch): local has diverged, skipping (rebase manually)"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        # Fast-forward the branch (works even if not checked out)
+        if git -C "$dir" update-ref "$local_ref" "$remote_sha" "$local_sha" 2>/dev/null; then
+            local ahead_count=$(git -C "$dir" rev-list "$local_sha".."$remote_sha" --count)
+            echo "  ✓ $repo_name ($default_branch): fast-forwarded $ahead_count commit(s)"
+            synced=$((synced + 1))
+        else
+            echo "  ❌ $repo_name ($default_branch): update failed"
+            failed=$((failed + 1))
+        fi
+    done
+
+    echo ""
+    echo "📈 Sync complete: $synced synced, $skipped skipped, $failed failed"
+}
+
+open_home() {
+    if [ -n "$EDITOR" ]; then
+        echo "📝 Opening installation directory with $EDITOR..."
+        $EDITOR "$AW_INSTALL_DIR"
+    elif command -v cursor &> /dev/null; then
+        echo "📝 Opening installation directory with Cursor..."
+        cursor "$AW_INSTALL_DIR"
+    elif command -v code &> /dev/null; then
+        echo "📝 Opening installation directory with VS Code..."
+        code "$AW_INSTALL_DIR"
+    elif [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ] || [ "$(uname)" = "Darwin" ]; then
+        echo "📂 Opening installation directory in file manager..."
+        if [ "$(uname)" = "Darwin" ]; then
+            open "$AW_INSTALL_DIR"
+        elif command -v xdg-open &> /dev/null; then
+            xdg-open "$AW_INSTALL_DIR"
+        fi
+    else
+        echo "📂 Installation directory location: $AW_INSTALL_DIR"
+    fi
+}
+
+# Main command handler
+case "$1" in
+    init)
+        check_dependencies
+        init_base_workspace "${2:-default}"
+        ;;
+    create)
+        shift
+        handle_create_command "$@"
+        ;;
+    list|ls)
+        list_workspaces
+        ;;
+    start|enter|open)
+        shift
+        start_workspace "$@"
+        ;;
+    delete|rm)
+        delete_workspace "$2"
+        ;;
+    config)
+        show_config
+        ;;
+    edit-config)
+        edit_config
+        ;;
+    sync)
+        sync_workspace
+        ;;
+    edit-base)
+        edit_base "$2"
+        ;;
+    open-home)
+        open_home
+        ;;
+    help|--help|-h)
+        print_help
+        ;;
+    *)
+        print_help
+        exit 1
+        ;;
+esac

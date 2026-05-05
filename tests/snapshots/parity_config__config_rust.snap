@@ -1,0 +1,9 @@
+---
+source: tests/parity_config.rs
+expression: stdout
+---
+📋 Configuration file: <CONFIG>
+✓ File exists
+
+Available base configurations:
+  • default

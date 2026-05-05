@@ -1,0 +1,72 @@
+name: parity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  parity:
+    name: parity (bash baseline + rust port)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yq, jq, tmux
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends jq tmux
+          # apt's `yq` is a different tool (yaml->json wrapper around python).
+          # The bash CLI uses mikefarah/yq syntax (`.foo[]`), so install that one.
+          sudo curl -fsSL -o /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Ensure en_US.UTF-8 locale exists
+        run: |
+          sudo locale-gen en_US.UTF-8
+          locale -a | grep en_US.utf8
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build aw + tests
+        run: cargo build --tests --locked
+
+      - name: Frozen-bash sanity check
+        run: ./tests/fixtures/aw-bash help >/dev/null
+
+      - name: Run parity tests (bash baseline)
+        # Default behavior skips #[ignore]-d Rust tests; that's exactly what we
+        # want here — bash assertions must pass; Rust parity is tracked in the
+        # informational job below.
+        run: cargo test --tests --locked
+        env:
+          # Force insta to fail (not autoupdate) on snapshot drift.
+          INSTA_UPDATE: "no"
+          CI: "true"
+
+  rust-port-progress:
+    name: rust port progress (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install yq, jq, tmux
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends jq tmux
+          sudo curl -fsSL -o /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+      - name: Ensure en_US.UTF-8 locale exists
+        run: sudo locale-gen en_US.UTF-8
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run #[ignore]-d Rust parity tests
+        # Will fail until each subcommand is ported. continue-on-error keeps
+        # the overall PR green; the job's status is informational ("how many
+        # parity tests pass against the Rust binary").
+        run: cargo test --tests --locked -- --ignored

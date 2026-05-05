@@ -1,0 +1,50 @@
+---
+source: tests/rust_shell.rs
+expression: "shell_init(\"fish\")"
+---
+# >>> aw shell-init (fish) >>>
+function aw
+  switch $argv[1]
+    case start enter open
+      set -l rest $argv[2..-1]
+      set -l script (command aw _shell-start $rest)
+      or return $status
+      eval $script
+    case '*'
+      command aw $argv
+  end
+end
+
+function __aw_chpwd --on-variable PWD
+  set -l ws (command aw _detect-workspace $PWD 2>/dev/null)
+  if test -z "$ws"
+    set -e AGENT_WORKSPACE
+    set -e AGENT_WORKSPACE_NAME
+    return 0
+  end
+  set -gx AGENT_WORKSPACE $ws
+  set -gx AGENT_WORKSPACE_NAME (basename $ws)
+  for h in $HOME/.agent-workspaces/hooks.d/*.sh $ws/.agent-workspace/hooks.d/*.sh
+    if test -r $h
+      bass source $h ^/dev/null; or source $h
+    end
+  end
+end
+__aw_chpwd
+
+# ---------- Tab completion ----------
+complete -c aw -f
+# Subcommands.
+complete -c aw -n '__fish_use_subcommand' -a 'init create list ls start enter open delete rm config edit-config edit-base sync open-home dash hook shell-init completions install'
+# Dynamic args.
+complete -c aw -n '__fish_seen_subcommand_from start enter open delete rm' -a '(command aw _list-workspaces 2>/dev/null)'
+complete -c aw -n '__fish_seen_subcommand_from edit-base init'             -a '(command aw _list-bases 2>/dev/null)'
+complete -c aw -n '__fish_seen_subcommand_from create' -l base -d 'base name' -xa '(command aw _list-bases 2>/dev/null)'
+# Dash / install / hook value-enums.
+complete -c aw -n '__fish_seen_subcommand_from dash' -a 'sidebar status-line next-ready park json gc'
+complete -c aw -n '__fish_seen_subcommand_from install' -a 'shell hooks tmux-bindings all'
+complete -c aw -n '__fish_seen_subcommand_from install' -l agent -xa 'claude codex pi all'
+complete -c aw -n '__fish_seen_subcommand_from install' -l shell -xa 'zsh bash fish'
+complete -c aw -n '__fish_seen_subcommand_from shell-init completions' -a 'zsh bash fish'
+complete -c aw -n '__fish_seen_subcommand_from hook' -l agent -xa 'claude codex pi'
+# <<< aw shell-init (fish) <<<

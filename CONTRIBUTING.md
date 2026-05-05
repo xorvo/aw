@@ -155,6 +155,63 @@ If you ever get an Apple Developer ID and want to notarize:
 
 Not worth doing until users actually report the install friction.
 
+### Homebrew tap (auto-updated)
+
+`aw` is published to the personal tap at
+[`xorvo/homebrew-tap`](https://github.com/xorvo/homebrew-tap). Users
+install with:
+
+```bash
+brew tap xorvo/tap
+brew install aw
+```
+
+The formula at `xorvo/homebrew-tap/Formula/aw.rb` is **regenerated on
+every release** by the `update-homebrew-tap` job in `release.yml`. Source
+of truth lives in this repo at `scripts/homebrew-formula.rb.tmpl` —
+edit there, not in the tap.
+
+#### One-time setup
+
+The tap-update job needs a token with write access to the tap repo.
+Create it once:
+
+  1. Generate a fine-grained PAT at
+     <https://github.com/settings/personal-access-tokens/new>:
+       - Resource owner: `xorvo`
+       - Repository access: `xorvo/homebrew-tap` only
+       - Permissions: Contents → Read and write
+       - Expiration: as long as you'll trust the box
+  2. Add it to this repo's secrets:
+     ```bash
+     gh secret set HOMEBREW_TAP_TOKEN --repo xorvo/aw
+     ```
+     and paste the token. Or use the web UI at Settings → Secrets and
+     variables → Actions → New repository secret.
+
+If the secret is missing on a release, the `update-homebrew-tap` job
+fails (clearly) and the build job still succeeds — users can still get
+the binary via `aw self update` or by downloading the tarball
+directly. Set the secret, then tag a patch release to rerun.
+
+#### Manual formula update (escape hatch)
+
+If you need to publish a hotfix without going through the workflow:
+
+```bash
+git clone git@github.com:xorvo/homebrew-tap.git /tmp/tap
+TAG=v1.2.3
+SHA_ARM=$(curl -fsSL "https://github.com/xorvo/aw/releases/download/${TAG}/aw-${TAG}-aarch64-apple-darwin.tar.gz.sha256")
+SHA_X86=$(curl -fsSL "https://github.com/xorvo/aw/releases/download/${TAG}/aw-${TAG}-x86_64-apple-darwin.tar.gz.sha256")
+sed \
+  -e "s|@VERSION@|${TAG#v}|g" \
+  -e "s|@SHA_ARM64@|${SHA_ARM}|g" \
+  -e "s|@SHA_X86_64@|${SHA_X86}|g" \
+  scripts/homebrew-formula.rb.tmpl \
+  > /tmp/tap/Formula/aw.rb
+( cd /tmp/tap && git add Formula/aw.rb && git commit -m "Formula/aw.rb: bump to ${TAG#v}" && git push )
+```
+
 ### Adding a new build target
 
 Today only macOS is supported. To add Linux / Windows:

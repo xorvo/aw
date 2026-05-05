@@ -4,43 +4,47 @@ A helper to setup sub-workspaces in your local environment optimized for
 AI agents like [Claude Code](https://www.anthropic.com/claude-code), with
 a tmux-based dashboard ([`aw dash`](docs/dash.md)) for live agent state.
 
-## Installation
+## Installation (macOS)
 
-### Pre-built binary (macOS, recommended)
-
-Each release ships pre-built binaries for `aarch64-apple-darwin` (Apple
-Silicon) and `x86_64-apple-darwin` (Intel). Grab the latest from the
-[Releases page](https://github.com/xorvo/aw/releases) and:
+### Homebrew (recommended)
 
 ```bash
-# Replace <triple> with aarch64-apple-darwin or x86_64-apple-darwin
-TAG=v1.0.0
-TRIPLE=aarch64-apple-darwin
-curl -fsSL "https://github.com/xorvo/aw/releases/download/${TAG}/aw-${TAG}-${TRIPLE}.tar.gz" \
-  | tar -xz -C ~/.local/bin
-xattr -d com.apple.quarantine ~/.local/bin/aw 2>/dev/null   # one-time, optional
+brew tap xorvo/tap
+brew install aw
 aw install all                      # shell hook + agent hooks + tmux bindings
 ```
 
-After install, `aw self update` keeps you on the latest release without
-re-running the curl one-liner.
+The formula pulls a pre-built binary for your architecture and
+declares the runtime dependencies (`git`, `tmux`) so brew handles them
+for you.
+
+### Direct download
+
+```bash
+TAG=v1.0.0 TRIPLE=$(uname -m | sed 's/arm64/aarch64/')-apple-darwin
+curl -fsSL "https://github.com/xorvo/aw/releases/download/${TAG}/aw-${TAG}-${TRIPLE}.tar.gz" \
+  | tar -xz -C ~/.local/bin
+xattr -d com.apple.quarantine ~/.local/bin/aw 2>/dev/null
+aw install all
+```
 
 ### From source
 
 ```bash
-./install.sh                        # builds the Rust binary, installs to ~/.local/bin
+git clone https://github.com/xorvo/aw.git && cd aw
+./install.sh
 aw install all
 ```
 
-Requires a Rust toolchain (https://rustup.rs) at install time only — the
-shipped binary has no runtime dependencies beyond `git` and (optionally)
-`tmux`.
+Needs a Rust toolchain (<https://rustup.rs>). Mostly useful for hacking
+on `aw` itself; pre-built binaries above are the path for normal use.
 
 ### Upgrades
 
 ```bash
-aw self check                       # is there a newer release?
-aw self update                      # upgrade in place
+brew upgrade aw                     # if installed via Homebrew
+# or
+aw self update                      # works regardless of how you installed
 ```
 
 > Migrating from a previous bash-based install? See

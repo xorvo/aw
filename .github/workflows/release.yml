@@ -69,3 +69,64 @@ jobs:
           # full Releases page; users can opt-in to RCs by tagging
           # explicitly. (No-op for v1.0.0 itself.)
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+  update-homebrew-tap:
+    name: bump xorvo/homebrew-tap
+    needs: build
+    runs-on: ubuntu-latest
+    # Skip pre-releases: brew users shouldn't suddenly upgrade to an RC.
+    if: ${{ !contains(github.ref_name, '-') }}
+    steps:
+      - name: Checkout aw (template lives here)
+        uses: actions/checkout@v4
+        with:
+          path: aw
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: xorvo/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Fetch tarball SHAs from the release
+        id: shas
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          # The .sha256 files were uploaded by the matrix build above. They
+          # contain just the hex digest, no filename.
+          fetch() {
+            curl -fsSL --retry 5 --retry-delay 3 --retry-connrefused \
+              "https://github.com/xorvo/aw/releases/download/${TAG}/aw-${TAG}-${1}.tar.gz.sha256"
+          }
+          SHA_ARM=$(fetch aarch64-apple-darwin)
+          SHA_X86=$(fetch x86_64-apple-darwin)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha_arm=$SHA_ARM" >> "$GITHUB_OUTPUT"
+          echo "sha_x86=$SHA_X86" >> "$GITHUB_OUTPUT"
+
+      - name: Render formula
+        run: |
+          cd aw
+          sed \
+            -e "s|@VERSION@|${{ steps.shas.outputs.version }}|g" \
+            -e "s|@SHA_ARM64@|${{ steps.shas.outputs.sha_arm }}|g" \
+            -e "s|@SHA_X86_64@|${{ steps.shas.outputs.sha_x86 }}|g" \
+            scripts/homebrew-formula.rb.tmpl \
+            > ../tap/Formula/aw.rb
+          echo '--- rendered formula ---'
+          cat ../tap/Formula/aw.rb
+
+      - name: Commit + push
+        run: |
+          cd tap
+          if git diff --quiet -- Formula/aw.rb; then
+            echo 'Formula already at the right version — nothing to push.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add Formula/aw.rb
+          git commit -m "Formula/aw.rb: bump to ${{ steps.shas.outputs.version }}"
+          git push

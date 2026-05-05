@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Padding, Paragraph, Wrap},
     Frame,
 };
 
@@ -87,7 +87,15 @@ fn render_body(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_list(f: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default().borders(Borders::ALL).title("Agents");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .padding(Padding::horizontal(1))
+        .title(Span::styled(
+            " Agents ",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -106,23 +114,37 @@ fn render_list(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let lines: Vec<Line> = app
-        .rows
-        .iter()
-        .enumerate()
-        .map(|(i, row)| line_for_row(row, i == app.selected))
-        .collect();
+    // Inject blank line before each workspace header (except the first)
+    // so groups breathe a little. Using a one-shot index map so the
+    // selected-row math stays correct against `app.rows`.
+    let mut lines: Vec<Line> = Vec::with_capacity(app.rows.len() + 4);
+    let mut prior_was_pane = false;
+    for (i, row) in app.rows.iter().enumerate() {
+        if matches!(row, Row::Header { .. }) && prior_was_pane {
+            lines.push(Line::raw(""));
+        }
+        lines.push(line_for_row(row, i == app.selected));
+        prior_was_pane = matches!(row, Row::Pane(_));
+    }
 
     f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn line_for_row(row: &Row, selected: bool) -> Line<'static> {
-    let cursor = if selected { "› " } else { "  " };
+    // Selection cue: a left-edge accent bar (▌ in cyan) instead of the
+    // ›/space carat. Scans more cleanly because the bar sits in its own
+    // single-cell column flush against the block padding.
+    let edge = if selected {
+        Span::styled("▌", Style::default().fg(Color::Cyan))
+    } else {
+        Span::raw(" ")
+    };
     match row {
         Row::Header { workspace, session_hint, collapsed } => {
             let arrow = if *collapsed { "▸" } else { "▾" };
             Line::from(vec![
-                Span::raw(cursor),
+                edge,
+                Span::raw(" "),
                 Span::styled(
                     format!("{} {}", arrow, workspace),
                     Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
@@ -155,8 +177,8 @@ fn line_for_row(row: &Row, selected: bool) -> Line<'static> {
                 truncate(&p.last_prompt, 40)
             };
             let mut spans = vec![
-                Span::raw(cursor),
-                Span::raw("  "),
+                edge,
+                Span::raw("   "),
                 Span::styled(glyph.to_string(), glyph_style),
                 Span::raw("  "),
                 Span::styled(
@@ -189,8 +211,16 @@ fn line_for_row(row: &Row, selected: bool) -> Line<'static> {
 }
 
 fn render_detail(f: &mut Frame, area: Rect, app: &App) {
-    let title = if app.show_preview { "Preview" } else { "Details" };
-    let block = Block::default().borders(Borders::ALL).title(title);
+    let title = if app.show_preview { " Preview " } else { " Details " };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .padding(Padding::horizontal(1))
+        .title(Span::styled(
+            title,
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -244,19 +274,40 @@ fn status_label(s: Status) -> &'static str {
 fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let line = match app.mode {
         Mode::Filter => Line::from(vec![
-            Span::styled("/", Style::default().fg(Color::Yellow)),
+            Span::styled("/", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
             Span::raw(app.filter.clone()),
+            Span::raw("  "),
             Span::styled(
-                "  (Enter to confirm, Esc to clear)",
+                "↵ confirm · esc clear",
                 Style::default().fg(Color::DarkGray),
             ),
         ]),
-        Mode::Normal => Line::from(vec![
-            Span::styled(
-                "↵ jump  Tab preview  / filter  p park  n next-ready  r refresh  Space (un)collapse  q quit",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]),
+        Mode::Normal => {
+            let key_style = Style::default().fg(Color::Cyan);
+            let act_style = Style::default().fg(Color::DarkGray);
+            let sep = Span::styled("  ·  ", act_style);
+            // Pairs of (key, action). Rendered key↪action then joined by `·`.
+            let pairs: &[(&str, &str)] = &[
+                ("↵", "jump"),
+                ("⇥", "preview"),
+                ("/", "filter"),
+                ("p", "park"),
+                ("n", "next-ready"),
+                ("r", "refresh"),
+                ("␣", "(un)collapse"),
+                ("q", "quit"),
+            ];
+            let mut spans: Vec<Span> = Vec::with_capacity(pairs.len() * 4);
+            for (i, (k, a)) in pairs.iter().enumerate() {
+                if i > 0 {
+                    spans.push(sep.clone());
+                }
+                spans.push(Span::styled(k.to_string(), key_style));
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(a.to_string(), act_style));
+            }
+            Line::from(spans)
+        }
     };
     f.render_widget(Paragraph::new(line), area);
 }

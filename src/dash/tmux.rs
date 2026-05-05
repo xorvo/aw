@@ -163,12 +163,42 @@ fn looks_like_hostname(s: &str) -> bool {
     hosts.iter().flatten().any(|h| !h.is_empty() && h == s)
 }
 
-/// `tmux switch-client -t <pane>; tmux select-pane -t <pane>`.
+/// Move the user's focus to `pane_id`. Behaves correctly whether or not
+/// the dashboard was launched from inside tmux:
+///
+///   - **Inside tmux** (`$TMUX` set) — `tmux switch-client -t <pane>` is
+///     instant: the existing client jumps to the target pane's session
+///     and pane in one step.
+///   - **Outside tmux** — `switch-client` would silently no-op (no client
+///     to switch). Instead we resolve the pane's session and run
+///     `tmux attach-session -t <session>` chained with a `select-pane`,
+///     so the user *enters* tmux landing on the right pane. Their
+///     terminal becomes the tmux client.
 pub fn switch_to_pane(pane_id: &str) {
+    if std::env::var_os("TMUX").is_some() {
+        let _ = Command::new("tmux")
+            .args(["switch-client", "-t", pane_id])
+            .status();
+        let _ = Command::new("tmux")
+            .args(["select-pane", "-t", pane_id])
+            .status();
+        return;
+    }
+
+    // Outside tmux: resolve session from the pane, then attach to it.
+    let session = pane_session(pane_id);
+    if session.is_empty() {
+        eprintln!("could not resolve tmux session for pane {}", pane_id);
+        return;
+    }
+    // `;` between commands chains them in tmux's command-line grammar so
+    // the select-pane runs after the attach. Note: the leading semicolon
+    // must be its own arg for the shell-free Command::args path.
     let _ = Command::new("tmux")
-        .args(["switch-client", "-t", pane_id])
-        .status();
-    let _ = Command::new("tmux")
-        .args(["select-pane", "-t", pane_id])
+        .args([
+            "attach-session", "-t", &session,
+            ";",
+            "select-pane", "-t", pane_id,
+        ])
         .status();
 }

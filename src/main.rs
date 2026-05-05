@@ -5,12 +5,13 @@ mod git;
 mod hook;
 mod install;
 mod paths;
+mod self_update;
 mod shell;
 mod workspace;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{Cli, Cmd, DashCmd};
+use cli::{Cli, Cmd, DashCmd, SelfCmd};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -42,6 +43,11 @@ fn main() -> Result<()> {
         Cmd::Completions { shell } => shell::completions::run(shell),
 
         Cmd::Install { command } => install::run(command),
+
+        Cmd::SelfMgmt { command } => match command {
+            SelfCmd::Check => self_update::check(),
+            SelfCmd::Update { yes } => self_update::update(yes),
+        },
 
         Cmd::ShellStart { name, no_tmux } => workspace::start::shell_start(&name, no_tmux),
         Cmd::DetectWorkspace { cwd } => shell::detect::run(&cwd),

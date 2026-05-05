@@ -80,6 +80,13 @@ pub enum Cmd {
         command: InstallCmd,
     },
 
+    /// Self-management: check for updates, upgrade in place
+    #[command(name = "self")]
+    SelfMgmt {
+        #[command(subcommand)]
+        command: SelfCmd,
+    },
+
     // ---- internal subcommands (hidden) ----
     /// Internal: emit shell snippet for `aw start` (called by the shell wrapper)
     #[command(name = "_shell-start", hide = true)]
@@ -119,6 +126,18 @@ pub enum DashCmd {
     Json,
     /// Prune state files for dead panes
     Gc,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SelfCmd {
+    /// Check whether a newer release is available on GitHub
+    Check,
+    /// Download the latest release and replace this binary in place
+    Update {
+        /// Skip the confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

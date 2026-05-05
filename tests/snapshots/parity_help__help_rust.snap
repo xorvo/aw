@@ -22,6 +22,7 @@ Commands:
   shell-init   Print shell hook for eval (e.g. `eval "$(aw shell-init zsh)"`)
   completions  Print shell completions
   install      Interactive setup helpers
+  self         Self-management: check for updates, upgrade in place
 
 Options:
   -h, --help     Print help

@@ -1,6 +1,6 @@
 [package]
 name = "aw"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "Manage isolated workspaces for AI agents, with a tmux-based dashboard for live state."
 license = "MIT"
@@ -27,6 +27,11 @@ walkdir = "2"
 shellexpand = "3"
 dirs = "5"
 tempfile = "3"
+# `self_update` pulls update artifacts from GitHub Releases. We disable the
+# default features (which include reqwest/native-tls and pull in OpenSSL)
+# and re-enable just rustls + the formats we use, keeping the binary
+# self-contained on macOS.
+self_update = { version = "0.41", default-features = false, features = ["archive-tar", "compression-flate2", "rustls"] }
 
 [dev-dependencies]
 assert_cmd = "2"

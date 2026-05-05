@@ -1,0 +1,71 @@
+name: release
+
+# Triggered by pushing a `v*` tag (e.g. `v1.0.0`). Builds a macOS arm64 +
+# x86_64 binary, ad-hoc-signs each so Gatekeeper is less aggressive, packs
+# tarballs named for `aw self update` to find them, and attaches everything
+# to the GitHub Release.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - name: cargo build --release
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: strip
+        run: strip target/${{ matrix.target }}/release/aw
+
+      - name: ad-hoc codesign
+        # Without notarization the binary will still be quarantined when
+        # downloaded from the internet, but `aw self update` strips the
+        # quarantine xattr after upgrading. Ad-hoc signing keeps the
+        # signature subsystem from outright rejecting it on launch.
+        run: codesign --sign - --force target/${{ matrix.target }}/release/aw
+
+      - name: package
+        id: package
+        run: |
+          mkdir -p dist
+          NAME=aw-${GITHUB_REF_NAME}-${{ matrix.target }}
+          tar -C target/${{ matrix.target }}/release -czf "dist/${NAME}.tar.gz" aw
+          shasum -a 256 "dist/${NAME}.tar.gz" \
+            | awk '{ print $1 }' > "dist/${NAME}.tar.gz.sha256"
+          echo "asset_name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/${{ steps.package.outputs.asset_name }}.tar.gz
+            dist/${{ steps.package.outputs.asset_name }}.tar.gz.sha256
+          # Auto-generated body from commits since the previous tag.
+          generate_release_notes: true
+          # Don't prerelease — tags like v1.0.0-rc1 still go to the
+          # full Releases page; users can opt-in to RCs by tagging
+          # explicitly. (No-op for v1.0.0 itself.)
+          prerelease: ${{ contains(github.ref_name, '-') }}

@@ -32,6 +32,47 @@ pub fn apply(path: &Path, label: &str, body: &str) -> Result<()> {
     std::fs::write(path, new).with_context(|| format!("write {}", path.display()))
 }
 
+/// Strip our marker block from `path` if present. Returns Ok(true) when a
+/// block was found and removed, Ok(false) when no block was present.
+pub fn remove(path: &Path, label: &str) -> Result<bool> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return Ok(false),
+    };
+    let (new, found) = strip(&existing, label);
+    if !found {
+        return Ok(false);
+    }
+    std::fs::write(path, new).with_context(|| format!("write {}", path.display()))?;
+    Ok(true)
+}
+
+fn strip(existing: &str, label: &str) -> (String, bool) {
+    let open = open_marker(label);
+    let close = close_marker(label);
+    let open_idx = match existing.find(&open) {
+        Some(i) => i,
+        None => return (existing.to_string(), false),
+    };
+    let close_idx = match existing[open_idx..].find(&close) {
+        Some(i) => open_idx + i,
+        None => return (existing.to_string(), false),
+    };
+    // Expand the cut to whole lines: from the start of the line containing
+    // `open` to one past the newline that ends the line containing `close`.
+    // This way we never collapse blank lines that surround the block.
+    let line_start = existing[..open_idx].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let close_end = close_idx + close.len();
+    let line_end = existing[close_end..]
+        .find('\n')
+        .map(|i| close_end + i + 1)
+        .unwrap_or(existing.len());
+    let mut out = String::with_capacity(existing.len());
+    out.push_str(&existing[..line_start]);
+    out.push_str(&existing[line_end..]);
+    (out, true)
+}
+
 fn render(existing: &str, label: &str, body: &str) -> String {
     let open = open_marker(label);
     let close = close_marker(label);
@@ -90,5 +131,29 @@ mod tests {
     fn appends_to_empty_file() {
         let out = render("", "shell", "x");
         assert_eq!(out, "# >>> aw shell >>>\nx\n# <<< aw shell <<<\n");
+    }
+
+    #[test]
+    fn strip_removes_block_and_keeps_surrounding() {
+        let pre = "# top\n\n# >>> aw foo >>>\nbody\n# <<< aw foo <<<\n# tail\n";
+        let (out, found) = strip(pre, "foo");
+        assert!(found);
+        assert_eq!(out, "# top\n\n# tail\n");
+    }
+
+    #[test]
+    fn strip_returns_false_when_block_absent() {
+        let pre = "# unrelated\n";
+        let (out, found) = strip(pre, "foo");
+        assert!(!found);
+        assert_eq!(out, pre);
+    }
+
+    #[test]
+    fn strip_handles_block_at_end() {
+        let pre = "# top\n# >>> aw foo >>>\nbody\n# <<< aw foo <<<\n";
+        let (out, found) = strip(pre, "foo");
+        assert!(found);
+        assert_eq!(out, "# top\n");
     }
 }

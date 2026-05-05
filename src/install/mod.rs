@@ -22,7 +22,7 @@ pub fn run(cmd: InstallCmd) -> Result<()> {
     match cmd {
         InstallCmd::Shell { shell } => run_shell(shell),
         InstallCmd::Hooks { agent } => run_hooks(agent.unwrap_or(AgentKind::All)),
-        InstallCmd::TmuxBindings => tmux::install(),
+        InstallCmd::TmuxBindings { config } => tmux::install(config.as_deref()),
         InstallCmd::All => run_all(),
     }
 }
@@ -57,7 +57,7 @@ fn run_all() -> Result<()> {
     let _ = run_hooks(AgentKind::All);
     println!();
     println!("→ Tmux key bindings");
-    let _ = tmux::install();
+    let _ = tmux::install(None);
     println!();
     println!("✅ Done. You may need to restart your shell.");
     Ok(())

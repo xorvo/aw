@@ -47,7 +47,8 @@ fn install_tmux_bindings_writes_block() {
     let env = TestEnv::new();
     let cap = capture(&env, &env.run(Bin::Rust, &["install", "tmux-bindings"]));
     assert_eq!(cap.exit, 0, "{}", cap.stderr);
-    let body = std::fs::read_to_string(env.home.join(".tmux.conf")).unwrap();
+    // With neither config present, we default to the XDG path (modern).
+    let body = std::fs::read_to_string(env.home.join(".config/tmux/tmux.conf")).unwrap();
     assert!(body.contains("bind-key a display-popup"));
     assert!(body.contains("aw dash next-ready"));
     assert!(body.contains("# >>> aw tmux bindings >>>"));
@@ -69,6 +70,135 @@ fn install_tmux_bindings_replaces_block_in_place() {
     assert!(!body.contains("old-content"));
     assert!(body.contains("aw dash next-ready"));
     assert_eq!(body.matches("# >>> aw tmux bindings >>>").count(), 1);
+}
+
+#[test]
+fn install_tmux_bindings_prefers_xdg_when_present() {
+    let env = TestEnv::new();
+    let xdg = env.home.join(".config/tmux/tmux.conf");
+    let legacy = env.home.join(".tmux.conf");
+    std::fs::create_dir_all(xdg.parent().unwrap()).unwrap();
+    std::fs::write(&xdg, "set -g mouse on\n").unwrap();
+    std::fs::write(&legacy, "# legacy stub\n").unwrap();
+
+    let cap = capture(&env, &env.run(Bin::Rust, &["install", "tmux-bindings"]));
+    assert_eq!(cap.exit, 0, "{}", cap.stderr);
+
+    // Bindings should land in the XDG file.
+    let xdg_body = std::fs::read_to_string(&xdg).unwrap();
+    assert!(xdg_body.contains("aw dash next-ready"), "XDG missing bindings:\n{}", xdg_body);
+    assert!(xdg_body.contains("set -g mouse on"), "XDG should preserve existing content");
+
+    // Legacy file should be untouched (no bindings — and we never wrote there).
+    let legacy_body = std::fs::read_to_string(&legacy).unwrap();
+    assert!(!legacy_body.contains("aw dash next-ready"), "legacy file should not be touched");
+}
+
+#[test]
+fn install_tmux_bindings_uses_legacy_when_xdg_absent() {
+    let env = TestEnv::new();
+    let xdg = env.home.join(".config/tmux/tmux.conf");
+    let legacy = env.home.join(".tmux.conf");
+    std::fs::write(&legacy, "set -g mouse on\n").unwrap();
+
+    let _ = env.run(Bin::Rust, &["install", "tmux-bindings"]);
+    assert!(!xdg.exists(), "should not have created the XDG file");
+    let body = std::fs::read_to_string(&legacy).unwrap();
+    assert!(body.contains("aw dash next-ready"));
+}
+
+#[test]
+fn install_tmux_bindings_creates_xdg_when_neither_exists() {
+    let env = TestEnv::new();
+    let xdg = env.home.join(".config/tmux/tmux.conf");
+    let _ = env.run(Bin::Rust, &["install", "tmux-bindings"]);
+    assert!(xdg.is_file(), "expected XDG file to be created");
+    let body = std::fs::read_to_string(&xdg).unwrap();
+    assert!(body.contains("aw dash next-ready"));
+}
+
+#[test]
+fn install_tmux_bindings_strips_stale_block_from_other_file() {
+    let env = TestEnv::new();
+    let xdg = env.home.join(".config/tmux/tmux.conf");
+    let legacy = env.home.join(".tmux.conf");
+    // Simulate the bug we just fixed: bindings live in the wrong file.
+    std::fs::write(
+        &legacy,
+        "# >>> aw tmux bindings >>>\nold\n# <<< aw tmux bindings <<<\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(xdg.parent().unwrap()).unwrap();
+    std::fs::write(&xdg, "set -g mouse on\n").unwrap();
+
+    let cap = capture(&env, &env.run(Bin::Rust, &["install", "tmux-bindings"]));
+    assert_eq!(cap.exit, 0);
+
+    // New target has the bindings, legacy lost the block.
+    assert!(std::fs::read_to_string(&xdg).unwrap().contains("aw dash next-ready"));
+    let legacy_body = std::fs::read_to_string(&legacy).unwrap();
+    assert!(!legacy_body.contains("# >>> aw tmux bindings >>>"), "stale marker remains: {}", legacy_body);
+}
+
+#[test]
+fn install_tmux_bindings_honors_explicit_config_flag() {
+    let env = TestEnv::new();
+    let custom = env.home.join("custom-loc/tmux.conf");
+    let xdg = env.home.join(".config/tmux/tmux.conf");
+    std::fs::create_dir_all(xdg.parent().unwrap()).unwrap();
+    std::fs::write(&xdg, "set -g mouse on\n").unwrap();
+
+    let cap = capture(
+        &env,
+        &env.run(
+            Bin::Rust,
+            &[
+                "install",
+                "tmux-bindings",
+                "--config",
+                custom.to_str().unwrap(),
+            ],
+        ),
+    );
+    assert_eq!(cap.exit, 0, "{}", cap.stderr);
+    assert!(custom.is_file(), "custom file not created");
+    assert!(std::fs::read_to_string(&custom).unwrap().contains("aw dash next-ready"));
+    // XDG should still be untouched.
+    let xdg_body = std::fs::read_to_string(&xdg).unwrap();
+    assert!(!xdg_body.contains("aw dash next-ready"));
+}
+
+#[test]
+fn install_tmux_bindings_honors_xdg_config_home_env() {
+    let env = TestEnv::new();
+    let custom_xdg_root = env.home.join("alt-xdg");
+    let xdg_path = custom_xdg_root.join("tmux/tmux.conf");
+
+    let mut cmd = std::process::Command::new(common::Bin::Rust.path());
+    cmd.args(["install", "tmux-bindings"])
+        .current_dir(&env.home)
+        .env_clear()
+        .env("HOME", &env.home)
+        .env(
+            "PATH",
+            format!(
+                "{}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+                env.fake_bin.display()
+            ),
+        )
+        .env("AW_INSTALL_DIR", &env.install_dir)
+        .env("AW_WORKSPACES_DIR", &env.workspaces_dir)
+        .env("AW_BIN_DIR", &env.bin_dir)
+        .env("AW_CONFIG_FILE", &env.config_path)
+        .env("AW_STATE_DIR", &env.state_dir)
+        .env("TMUX_TMPDIR", env.tmp.path())
+        .env("XDG_CONFIG_HOME", &custom_xdg_root)
+        .env("LC_ALL", "en_US.UTF-8")
+        .env("LANG", "en_US.UTF-8");
+    let out = cmd.output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(xdg_path.is_file(), "expected XDG_CONFIG_HOME-rooted file");
+    assert!(std::fs::read_to_string(&xdg_path).unwrap().contains("aw dash next-ready"));
 }
 
 // ---- claude hooks ----
@@ -185,7 +315,9 @@ fn install_all_runs_every_step() {
     let env = TestEnv::new();
     let cap = capture(&env, &env.run(Bin::Rust, &["install", "all"]));
     assert_eq!(cap.exit, 0, "{}", cap.stderr);
-    assert!(env.home.join(".tmux.conf").is_file());
+    // tmux bindings land in the XDG path by default since neither file
+    // pre-exists in a fresh test sandbox.
+    assert!(env.home.join(".config/tmux/tmux.conf").is_file());
     assert!(env.home.join(".claude/settings.json").is_file());
     assert!(env.home.join(".codex/hooks.json").is_file());
     assert!(env.home.join(".pi/agent/extensions/aw-dash/index.ts").is_file());

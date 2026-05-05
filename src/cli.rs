@@ -133,8 +133,13 @@ pub enum InstallCmd {
         #[arg(long)]
         agent: Option<AgentKind>,
     },
-    /// Append tmux key bindings to ~/.tmux.conf
-    TmuxBindings,
+    /// Append tmux key bindings to your tmux config file. We auto-detect
+    /// `~/.config/tmux/tmux.conf` (preferred) and `~/.tmux.conf` (legacy);
+    /// pass `--config <path>` to override.
+    TmuxBindings {
+        #[arg(long)]
+        config: Option<std::path::PathBuf>,
+    },
     /// Run shell + hooks + tmux-bindings interactively
     All,
 }

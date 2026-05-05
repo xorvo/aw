@@ -106,38 +106,86 @@ fn handle_exit_action(a: Action) {
     }
 }
 
-/// `aw dash sidebar` — spawn a 42-col pane in the current tmux session that
-/// runs `aw _sidebar-loop` until killed.
+/// `aw dash sidebar` — open the agent sidebar.
+///
+/// Idempotent within a tmux session: if a sidebar pane (tagged
+/// `@aw-sidebar = 1`) already exists, we just focus it. Otherwise we split
+/// a new 42-column pane to the right and tag it.
 pub fn run_sidebar() -> Result<()> {
-    let session = std::env::var("TMUX")
-        .ok()
-        .and_then(|_| {
-            std::process::Command::new("tmux")
-                .args(["display-message", "-p", "#{session_name}"])
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        })
-        .ok_or_else(|| anyhow::anyhow!("not inside a tmux session"))?;
+    if std::env::var_os("TMUX").is_none() {
+        anyhow::bail!("not inside a tmux session");
+    }
+    let session = tmux_capture(&["display-message", "-p", "#{session_name}"])
+        .ok_or_else(|| anyhow::anyhow!("could not resolve current tmux session"))?;
+
+    if let Some(existing) = find_existing_sidebar(&session) {
+        let _ = std::process::Command::new("tmux")
+            .args(["select-pane", "-t", &existing])
+            .status();
+        return Ok(());
+    }
 
     let aw_self = std::env::current_exe()?;
     let cmd = format!("{} _sidebar-loop", aw_self.display());
-    let status = std::process::Command::new("tmux")
+    let out = std::process::Command::new("tmux")
         .args([
             "split-window",
             "-h",
-            "-l",
-            "42",
-            "-t",
-            &session,
+            "-l", "42",
+            "-t", &session,
+            "-P",                       // print the new pane id...
+            "-F", "#{pane_id}",         // ...in this format
             &cmd,
         ])
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("tmux split-window failed");
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "tmux split-window failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let new_pane = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !new_pane.is_empty() {
+        let _ = std::process::Command::new("tmux")
+            .args(["set-option", "-p", "-t", &new_pane, "@aw-sidebar", "1"])
+            .status();
     }
     Ok(())
+}
+
+/// Returns the pane id of an existing sidebar in `session`, or None.
+fn find_existing_sidebar(session: &str) -> Option<String> {
+    let out = std::process::Command::new("tmux")
+        .args([
+            "list-panes",
+            "-s",                        // all windows in the session
+            "-t", session,
+            "-F", "#{pane_id}\t#{@aw-sidebar}",
+        ])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).lines().find_map(|line| {
+        let mut it = line.splitn(2, '\t');
+        let pane = it.next()?;
+        let mark = it.next().unwrap_or("");
+        if mark == "1" { Some(pane.to_string()) } else { None }
+    })
+}
+
+fn tmux_capture(args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("tmux")
+        .args(args)
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// `aw _sidebar-loop` — long-running redraw loop. Hand-renders to stdout

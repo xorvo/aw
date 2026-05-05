@@ -282,26 +282,34 @@ pub fn render_sidebar_text(snap: &Snapshot) -> String {
     out.push_str(" ───────────────────────────────\n");
     if snap.entries.is_empty() {
         out.push_str(" no agents tracked\n");
-        return out;
-    }
-    let mut by_ws: std::collections::BTreeMap<String, Vec<&crate::dash::state::PaneState>> =
-        std::collections::BTreeMap::new();
-    for e in &snap.entries {
-        by_ws.entry(e.workspace.clone()).or_default().push(e);
-    }
-    for (ws, panes) in by_ws {
-        let label = if ws.is_empty() { "(no workspace)".into() } else { ws };
-        out.push_str(&format!(" ▾ {}\n", label));
-        for p in panes {
-            let parked = if p.parked { " ⏏" } else { "" };
-            out.push_str(&format!(
-                "    {} {:<7} {:<4}{}\n",
-                status_glyph(p.status),
-                truncate(&p.agent, 7),
-                humanize_age(p.last_activity),
-                parked,
-            ));
+    } else {
+        let mut by_ws: std::collections::BTreeMap<String, Vec<&crate::dash::state::PaneState>> =
+            std::collections::BTreeMap::new();
+        for e in &snap.entries {
+            by_ws.entry(e.workspace.clone()).or_default().push(e);
+        }
+        for (ws, panes) in by_ws {
+            let label = if ws.is_empty() { "(no workspace)".into() } else { ws };
+            out.push_str(&format!(" ▾ {}\n", label));
+            for p in panes {
+                let parked = if p.parked { " ⏏" } else { "" };
+                out.push_str(&format!(
+                    "    {} {:<7} {:<4}{}\n",
+                    status_glyph(p.status),
+                    truncate(&p.agent, 7),
+                    humanize_age(p.last_activity),
+                    parked,
+                ));
+            }
         }
     }
+    // Hint footer: this pane is read-only by design — point users at the
+    // popup for navigation and at next-ready for one-keystroke triage.
+    // Always emitted so the affordance is discoverable even on first run
+    // when no agents have fired hooks yet.
+    out.push('\n');
+    out.push_str(" ───────────────────────────────\n");
+    out.push_str(" prefix+a → popup (j/k jump)\n");
+    out.push_str(" prefix+N → next waiting agent\n");
     out
 }

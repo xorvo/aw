@@ -4,6 +4,8 @@
 //! interleaved with pane rows. Headers are not selectable; `selected` always
 //! lands on a pane.
 
+use std::cell::Cell;
+
 use crate::dash::state::{DormantWorkspace, PaneState, Snapshot};
 
 /// One displayable line.
@@ -48,6 +50,11 @@ pub struct App {
     pub collapsed: std::collections::HashSet<String>,
     /// Whether the Dormant section is rendered. Toggled with `H`.
     pub show_dormant: bool,
+    /// First displayed line in the Agents pane (counted in rendered lines,
+    /// including blank separators between groups — not raw row indices).
+    /// Updated by the renderer to keep the selection in view; held in a
+    /// `Cell` so the immutable `&App` borrow in `view::render` can mutate it.
+    pub scroll_offset: Cell<u16>,
     /// Cached snapshot — for `apply()` resolving Jump/Park targets.
     pub snapshot: Snapshot,
 }
@@ -62,6 +69,7 @@ impl App {
             show_preview: false,
             collapsed: std::collections::HashSet::new(),
             show_dormant: true,
+            scroll_offset: Cell::new(0),
             snapshot: snap,
         };
         app.rebuild_rows();
@@ -287,6 +295,47 @@ fn is_selectable(row: &Row) -> bool {
     matches!(row, Row::Pane(_) | Row::Dormant(_))
 }
 
+/// Whether a blank separator line is rendered before `curr` to give
+/// groups vertical breathing room. Single source of truth used by both
+/// the line builder in `view::render_list` and the scroll math.
+pub fn injects_blank_before(prev_was_selectable: bool, curr: &Row) -> bool {
+    prev_was_selectable && matches!(curr, Row::Header { .. } | Row::DormantDivider)
+}
+
+/// Index of the rendered line corresponding to `app.rows[target]`,
+/// counting injected blank separators. Returns 0 if `target` is out of
+/// range.
+pub fn displayed_line_index(rows: &[Row], target: usize) -> u16 {
+    let mut line: u16 = 0;
+    let mut prior_selectable = false;
+    for (i, row) in rows.iter().enumerate() {
+        if injects_blank_before(prior_selectable, row) {
+            line = line.saturating_add(1);
+        }
+        if i == target {
+            return line;
+        }
+        line = line.saturating_add(1);
+        prior_selectable = matches!(row, Row::Pane(_) | Row::Dormant(_));
+    }
+    line.saturating_sub(1)
+}
+
+/// Total number of rendered lines in the Agents pane (rows + injected
+/// blanks). Used to clamp scroll offset on row-list shrink.
+pub fn total_displayed_lines(rows: &[Row]) -> u16 {
+    let mut line: u16 = 0;
+    let mut prior = false;
+    for row in rows {
+        if injects_blank_before(prior, row) {
+            line = line.saturating_add(1);
+        }
+        line = line.saturating_add(1);
+        prior = matches!(row, Row::Pane(_) | Row::Dormant(_));
+    }
+    line
+}
+
 /// Filter dormant workspaces by name/base via the same fuzzy matcher used
 /// for live entries. Empty filter returns the input unchanged. Sort order
 /// is alphabetical (input is already sorted by `Snapshot::load`).
@@ -505,6 +554,37 @@ mod tests {
 
         let empty_filter = filter_dormant(&pool, "");
         assert_eq!(empty_filter.len(), 3);
+    }
+
+    #[test]
+    fn displayed_line_index_counts_blank_separators() {
+        // Layout:
+        //   row 0: header alpha           (line 0)
+        //   row 1: pane alpha             (line 1)
+        //   row 2: header beta            (line 2 + blank before  → line 3)
+        //   row 3: pane beta              (line 4)
+        //   row 4: divider                (line 5 + blank before  → line 6)
+        //   row 5: dormant gamma          (line 7)
+        let app = App::new(snap(
+            vec![pane("%1", "alpha", "claude"), pane("%2", "beta", "claude")],
+            vec![dormant("gamma", "default")],
+        ));
+        // Sanity-check rebuilt rows.
+        assert!(matches!(app.rows[0], Row::Header { .. }));
+        assert!(matches!(app.rows[1], Row::Pane(_)));
+        assert!(matches!(app.rows[2], Row::Header { .. }));
+        assert!(matches!(app.rows[3], Row::Pane(_)));
+        assert!(matches!(app.rows[4], Row::DormantDivider));
+        assert!(matches!(app.rows[5], Row::Dormant(_)));
+
+        assert_eq!(displayed_line_index(&app.rows, 0), 0); // alpha header
+        assert_eq!(displayed_line_index(&app.rows, 1), 1); // alpha pane
+        assert_eq!(displayed_line_index(&app.rows, 2), 3); // beta header (after blank)
+        assert_eq!(displayed_line_index(&app.rows, 3), 4); // beta pane
+        assert_eq!(displayed_line_index(&app.rows, 4), 6); // divider (after blank)
+        assert_eq!(displayed_line_index(&app.rows, 5), 7); // gamma dormant
+
+        assert_eq!(total_displayed_lines(&app.rows), 8);
     }
 
     #[test]

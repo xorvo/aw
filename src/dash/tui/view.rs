@@ -125,19 +125,45 @@ fn render_list(f: &mut Frame, area: Rect, app: &App) {
     }
 
     // Inject blank line before each workspace header (except the first)
-    // so groups breathe a little. Using a one-shot index map so the
-    // selected-row math stays correct against `app.rows`.
+    // so groups breathe a little. The same rule lives in
+    // `app::injects_blank_before` so the scroll-line math stays in sync.
     let mut lines: Vec<Line> = Vec::with_capacity(app.rows.len() + 4);
-    let mut prior_was_pane = false;
+    let mut prior_was_selectable = false;
     for (i, row) in app.rows.iter().enumerate() {
-        if matches!(row, Row::Header { .. } | Row::DormantDivider) && prior_was_pane {
+        if crate::dash::tui::app::injects_blank_before(prior_was_selectable, row) {
             lines.push(Line::raw(""));
         }
         lines.push(line_for_row(row, i == app.selected));
-        prior_was_pane = matches!(row, Row::Pane(_) | Row::Dormant(_));
+        prior_was_selectable = matches!(row, Row::Pane(_) | Row::Dormant(_));
     }
 
-    f.render_widget(Paragraph::new(lines), inner);
+    // Scroll math: keep the selected row in view. The `Paragraph::scroll`
+    // tuple is (y, x) — we only ever scroll vertically. We track the
+    // offset on `app` (interior-mutable) so it persists across redraws,
+    // which keeps the cursor "stable" in the middle of the viewport
+    // instead of jumping to the edge on each navigation step.
+    let viewport_h = inner.height;
+    let total_lines = crate::dash::tui::app::total_displayed_lines(&app.rows);
+    let selected_line =
+        crate::dash::tui::app::displayed_line_index(&app.rows, app.selected);
+
+    let mut offset = app.scroll_offset.get();
+    // Defensive clamp — row list may have shrunk (H toggle, filter
+    // pruned rows) since the last render.
+    if total_lines > viewport_h {
+        offset = offset.min(total_lines - viewport_h);
+    } else {
+        offset = 0;
+    }
+    // Bring the selected line into the viewport with the minimum scroll.
+    if selected_line < offset {
+        offset = selected_line;
+    } else if viewport_h > 0 && selected_line >= offset + viewport_h {
+        offset = selected_line + 1 - viewport_h;
+    }
+    app.scroll_offset.set(offset);
+
+    f.render_widget(Paragraph::new(lines).scroll((offset, 0)), inner);
 }
 
 fn line_for_row(row: &Row, selected: bool) -> Line<'static> {
@@ -596,6 +622,54 @@ mod tests {
         assert!(out.contains("rust-base"), "base field missing:\n{}", out);
         assert!(out.contains("aw-my-spike"), "session preview missing:\n{}", out);
         assert!(out.contains("will be created"), "session-status hint missing:\n{}", out);
+    }
+
+    #[test]
+    fn list_scrolls_to_keep_selection_visible() {
+        // 30 panes in a single workspace — far more than the viewport
+        // can show. Move the selection to the last pane and assert that
+        // its label is in the rendered output (i.e. the viewport
+        // scrolled to follow it).
+        let panes: Vec<_> = (0..30)
+            .map(|i| pane(&format!("%{}", i), "alpha", &format!("agent-{:02}", i)))
+            .collect();
+        let mut app = App::new(Snapshot { entries: panes, dormant: vec![] });
+        // Default selection is pane 0; agent-29 should NOT be visible at
+        // a 24-row terminal (block borders + header eat several rows,
+        // leaving ~20 list rows max).
+        let initial = render_to_string(&app, 80, 24);
+        assert!(initial.contains("agent-00"), "first pane visible initially:\n{}", initial);
+        assert!(!initial.contains("agent-29"), "last pane should be off-screen initially:\n{}", initial);
+
+        // Move down 29 times — selection lands on pane 29.
+        for _ in 0..29 {
+            app.move_down();
+        }
+        let scrolled = render_to_string(&app, 80, 24);
+        assert!(scrolled.contains("agent-29"), "selected pane must be visible after scrolling:\n{}", scrolled);
+        assert!(!scrolled.contains("agent-00"), "first pane should be scrolled out:\n{}", scrolled);
+
+        // Move back to top — the viewport should follow up.
+        for _ in 0..29 {
+            app.move_up();
+        }
+        let back = render_to_string(&app, 80, 24);
+        assert!(back.contains("agent-00"), "first pane visible again after scrolling up:\n{}", back);
+    }
+
+    #[test]
+    fn list_does_not_scroll_when_everything_fits() {
+        let app = App::new(Snapshot {
+            entries: vec![
+                pane("%1", "alpha", "agent-a"),
+                pane("%2", "alpha", "agent-b"),
+            ],
+            dormant: vec![],
+        });
+        // Render large enough that nothing gets clipped, then assert
+        // scroll_offset stayed at 0.
+        let _ = render_to_string(&app, 100, 40);
+        assert_eq!(app.scroll_offset.get(), 0);
     }
 
     #[test]

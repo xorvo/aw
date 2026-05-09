@@ -88,6 +88,76 @@ pub fn run(name: &str, no_tmux: bool) -> Result<()> {
     }
 }
 
+/// Spawn or switch to `aw-<name>`'s tmux session. Used by the dashboard's
+/// "open dormant workspace" action, where the caller has already torn down
+/// any TUI screen.
+///
+///   - **Inside tmux** — create the session detached if it's missing, then
+///     `tmux switch-client -t aw-<name>`. Returns once switched.
+///   - **Outside tmux** — `exec tmux new-session -A -s aw-<name>` so the
+///     calling process is replaced by tmux. Same semantics as `aw start`.
+pub fn open_or_attach_session(name: &str) -> Result<()> {
+    let paths = Paths::from_env()?;
+    let workspace_dir = paths.workspace_dir(name);
+    if !workspace_dir.is_dir() {
+        anyhow::bail!("workspace '{}' not found", name);
+    }
+    let session = format!("aw-{}", name);
+    let dir_str = workspace_dir
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("workspace path is not valid UTF-8"))?;
+
+    if std::env::var_os("TMUX").is_some() {
+        // Already inside tmux: ensure the session exists, then switch.
+        let exists = std::process::Command::new("tmux")
+            .args(["has-session", "-t", &session])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !exists {
+            let out = std::process::Command::new("tmux")
+                .args([
+                    "new-session", "-d",
+                    "-s", &session,
+                    "-c", dir_str,
+                ])
+                .output()?;
+            if !out.status.success() {
+                anyhow::bail!(
+                    "tmux new-session failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
+        let _ = std::process::Command::new("tmux")
+            .args(["switch-client", "-t", &session])
+            .status();
+        return Ok(());
+    }
+
+    // Outside tmux: exec into `new-session -A` (attach if exists, create
+    // otherwise). Replaces the current process.
+    let mut cmd = std::process::Command::new("tmux");
+    cmd.args([
+        "new-session", "-A",
+        "-s", &session,
+        "-c", dir_str,
+    ]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = cmd.exec();
+        return Err(err.into());
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = cmd.status();
+        Ok(())
+    }
+}
+
 /// `aw _shell-start <name>` — emit shell text for the wrapper to eval.
 ///
 /// On success, writes `cd ...; export ...; source ...` to stdout. On error,

@@ -75,7 +75,8 @@ fn popup_loop<B: ratatui::backend::Backend>(
                     Action::Jump(_)
                     | Action::Park(_)
                     | Action::Refresh
-                    | Action::NextReady => {
+                    | Action::NextReady
+                    | Action::OpenWorkspace(_) => {
                         if let Some(after) = app.apply(action) {
                             return Ok(after);
                         }
@@ -100,6 +101,13 @@ fn handle_exit_action(a: Action) {
                 if let Some(pane) = crate::dash::pick_next_ready_for(&snap) {
                     tmux::switch_to_pane(&pane);
                 }
+            }
+        }
+        Action::OpenWorkspace(name) => {
+            // Print to stderr so a failure surfaces after the alt-screen
+            // is restored. Exec-replaces our process when outside tmux.
+            if let Err(e) = crate::workspace::start::open_or_attach_session(&name) {
+                eprintln!("aw: could not open workspace '{}': {}", name, e);
             }
         }
         _ => {}
@@ -193,7 +201,7 @@ fn tmux_capture(args: &[&str]) -> Option<String> {
 pub fn run_sidebar_loop() -> Result<()> {
     let mut last_state = None::<String>;
     loop {
-        let snap = Snapshot::load().unwrap_or(Snapshot { entries: vec![] });
+        let snap = Snapshot::load().unwrap_or(Snapshot { entries: vec![], dormant: vec![] });
         let rendered = view::render_sidebar_text(&snap);
         // Only repaint when content changed — avoids flicker.
         if last_state.as_deref() != Some(rendered.as_str()) {

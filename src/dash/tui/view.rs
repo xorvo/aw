@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::dash::render::{humanize_age, parked_glyph, status_glyph};
+use crate::dash::render::{dormant_glyph, humanize_age, parked_glyph, status_glyph};
 use crate::dash::state::{Snapshot, Status};
 use crate::dash::tui::app::{App, Mode, Row};
 
@@ -105,6 +105,11 @@ fn render_list(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
 
     if app.rows.is_empty() {
+        // Differentiate "no panes, no workspaces on disk" (true empty)
+        // from "agents not wired up but workspaces exist but H toggled
+        // them off" (less likely; show generic). The dormant list is the
+        // tell — when populated and hidden, we'd still have rows, so
+        // app.rows being empty really does mean nothing to show.
         let empty = Paragraph::new(Line::from(vec![
             Span::styled(
                 "No agents tracked yet. ",
@@ -125,11 +130,11 @@ fn render_list(f: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = Vec::with_capacity(app.rows.len() + 4);
     let mut prior_was_pane = false;
     for (i, row) in app.rows.iter().enumerate() {
-        if matches!(row, Row::Header { .. }) && prior_was_pane {
+        if matches!(row, Row::Header { .. } | Row::DormantDivider) && prior_was_pane {
             lines.push(Line::raw(""));
         }
         lines.push(line_for_row(row, i == app.selected));
-        prior_was_pane = matches!(row, Row::Pane(_));
+        prior_was_pane = matches!(row, Row::Pane(_) | Row::Dormant(_));
     }
 
     f.render_widget(Paragraph::new(lines), inner);
@@ -160,6 +165,46 @@ fn line_for_row(row: &Row, selected: bool) -> Line<'static> {
                     Style::default().fg(Color::DarkGray),
                 ),
             ])
+        }
+        Row::DormantDivider => Line::from(vec![
+            edge,
+            Span::raw(" "),
+            Span::styled(
+                "─ Dormant ───────────────────",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+        Row::Dormant(d) => {
+            let mut spans = vec![
+                edge,
+                Span::raw("   "),
+                Span::styled(
+                    dormant_glyph().to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    format!("{:<20}", truncate(&d.name, 20)),
+                    Style::default().fg(Color::Gray),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    format!("{:<10}", truncate(&d.base, 10)),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    humanize_created(&d.created),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ];
+            // Selected row highlight matches Pane styling so the cursor
+            // reads consistently as you scroll between sections.
+            let mut line = Line::from(std::mem::take(&mut spans));
+            if selected {
+                line = line.style(Style::default().bg(Color::DarkGray));
+            }
+            line
         }
         Row::Pane(p) => {
             let glyph = status_glyph(p.status);
@@ -216,7 +261,14 @@ fn line_for_row(row: &Row, selected: bool) -> Line<'static> {
 }
 
 fn render_detail(f: &mut Frame, area: Rect, app: &App) {
-    let title = if app.show_preview { " Preview " } else { " Details " };
+    let dormant = app.selected_dormant();
+    let title = if dormant.is_some() {
+        " Workspace "
+    } else if app.show_preview {
+        " Preview "
+    } else {
+        " Details "
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -228,6 +280,36 @@ fn render_detail(f: &mut Frame, area: Rect, app: &App) {
         ));
     let inner = block.inner(area);
     f.render_widget(block, area);
+
+    if let Some(d) = dormant {
+        // Resolve the workspace dir for display; fall back gracefully if
+        // env-resolution fails (shouldn't, since we only got here because
+        // enumerate_workspaces succeeded earlier).
+        let cwd_display = match crate::paths::Paths::from_env() {
+            Ok(paths) => paths.workspace_dir(&d.name).display().to_string(),
+            Err(_) => "—".into(),
+        };
+        let lines = vec![
+            kv("name", &d.name),
+            kv("base", &d.base),
+            kv("created", if d.created.is_empty() { "—" } else { &d.created }),
+            kv("cwd", &cwd_display),
+            kv("session", &format!("aw-{} (will be created)", d.name)),
+            Line::raw(""),
+            Line::from(vec![
+                Span::styled(
+                    "↵ ",
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "open this workspace in a new tmux session",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]),
+        ];
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        return;
+    }
 
     let pane = match app.selected_pane() {
         Some(p) => p,
@@ -291,14 +373,23 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
             let key_style = Style::default().fg(Color::Cyan);
             let act_style = Style::default().fg(Color::DarkGray);
             let sep = Span::styled("  ·  ", act_style);
-            // Pairs of (key, action). Rendered key↪action then joined by `·`.
+            // Adapt the Enter label based on whether the cursor is on a
+            // dormant row — "open" reads better than "jump" for that
+            // action (it spawns a new session rather than switching to
+            // an existing pane).
+            let enter_action = if app.selected_dormant().is_some() {
+                "open"
+            } else {
+                "jump"
+            };
             let pairs: &[(&str, &str)] = &[
-                ("↵", "jump"),
+                ("↵", enter_action),
                 ("⇥", "preview"),
                 ("/", "filter"),
                 ("p", "park"),
                 ("n", "next-ready"),
                 ("r", "refresh"),
+                ("H", "dormant"),
                 ("␣", "(un)collapse"),
                 ("q", "quit"),
             ];
@@ -317,6 +408,65 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(line), area);
 }
 
+/// Best-effort relative-age formatter for `WorkspaceMeta::created`, which is
+/// free-form `date` output. We try a tiny set of common formats; on miss we
+/// truncate the raw string. Never lies — falls back to the original.
+fn humanize_created(raw: &str) -> String {
+    let raw = raw.trim();
+    if raw.is_empty() || raw == "unknown" {
+        return "—".into();
+    }
+    // Try ISO 8601 / RFC 3339-ish ("2024-03-05T14:23:01Z" or with offset).
+    // No chrono in the deps, so do a hand-roll: pull the leading
+    // YYYY-MM-DD HH:MM:SS chunk and treat as UTC if it looks structured.
+    if let Some(epoch) = parse_iso_like(raw) {
+        return crate::dash::render::humanize_age(epoch);
+    }
+    // Fallback: just show the raw string truncated. `date` output is too
+    // locale-dependent to parse reliably without a real datetime library.
+    truncate(raw, 16)
+}
+
+fn parse_iso_like(s: &str) -> Option<u64> {
+    // Accept `YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DD HH:MM:SS` (UTC). Anything
+    // after the seconds (timezone, fractional, etc.) is ignored — good
+    // enough for "5d ago" precision.
+    let bytes = s.as_bytes();
+    if bytes.len() < 19 {
+        return None;
+    }
+    let year: i64 = std::str::from_utf8(&bytes[0..4]).ok()?.parse().ok()?;
+    if bytes[4] != b'-' { return None; }
+    let month: u32 = std::str::from_utf8(&bytes[5..7]).ok()?.parse().ok()?;
+    if bytes[7] != b'-' { return None; }
+    let day: u32 = std::str::from_utf8(&bytes[8..10]).ok()?.parse().ok()?;
+    if !matches!(bytes[10], b'T' | b' ') { return None; }
+    let hour: u32 = std::str::from_utf8(&bytes[11..13]).ok()?.parse().ok()?;
+    if bytes[13] != b':' { return None; }
+    let minute: u32 = std::str::from_utf8(&bytes[14..16]).ok()?.parse().ok()?;
+    if bytes[16] != b':' { return None; }
+    let second: u32 = std::str::from_utf8(&bytes[17..19]).ok()?.parse().ok()?;
+    days_from_civil(year, month, day).and_then(|days| {
+        let secs = days
+            .checked_mul(86_400)?
+            .checked_add(hour as i64 * 3600 + minute as i64 * 60 + second as i64)?;
+        if secs < 0 { None } else { Some(secs as u64) }
+    })
+}
+
+/// Howard Hinnant's days-from-civil. Returns days since the Unix epoch.
+fn days_from_civil(y: i64, m: u32, d: u32) -> Option<i64> {
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = (y - era * 400) as u32;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe as i64 - 719_468)
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -324,6 +474,177 @@ fn truncate(s: &str, max: usize) -> String {
         let mut out: String = s.chars().take(max - 1).collect();
         out.push('…');
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dash::state::{DormantWorkspace, PaneState, Snapshot, Status};
+    use crate::dash::tui::app::App;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn pane(pane_id: &str, ws: &str, agent: &str) -> PaneState {
+        PaneState {
+            schema_version: 1,
+            pane_id: pane_id.into(),
+            session: format!("aw-{}", ws),
+            workspace: ws.into(),
+            cwd: format!("/tmp/{}", ws),
+            agent: agent.into(),
+            status: Status::Idle,
+            last_event: String::new(),
+            last_activity: 0,
+            last_prompt: String::new(),
+            parked: false,
+        }
+    }
+
+    fn dormant(name: &str, base: &str) -> DormantWorkspace {
+        DormantWorkspace {
+            name: name.into(),
+            base: base.into(),
+            created: "2026-03-01T10:00:00Z".into(),
+        }
+    }
+
+    /// Render `app` to an in-memory backend and return the visible text as
+    /// a single string with newlines between rows (trailing whitespace per
+    /// row stripped — content matters, padding doesn't).
+    fn render_to_string(app: &App, w: u16, h: u16) -> String {
+        let backend = TestBackend::new(w, h);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| render(f, app)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut out = String::new();
+        for y in 0..h {
+            let mut line = String::new();
+            for x in 0..w {
+                line.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn popup_renders_dormant_section_after_active() {
+        let app = App::new(Snapshot {
+            entries: vec![pane("%1", "alpha", "claude")],
+            dormant: vec![dormant("scratch", "default"), dormant("backlog", "python")],
+        });
+        let out = render_to_string(&app, 100, 24);
+        // Active workspace header + pane row
+        assert!(out.contains("alpha"), "active workspace header missing:\n{}", out);
+        // Dormant divider header
+        assert!(out.contains("Dormant"), "dormant divider missing:\n{}", out);
+        // Both dormant workspaces, both bases
+        assert!(out.contains("backlog"), "backlog dormant row missing:\n{}", out);
+        assert!(out.contains("scratch"), "scratch dormant row missing:\n{}", out);
+        assert!(out.contains("python"), "base column for backlog missing:\n{}", out);
+        // Footer key hint
+        assert!(out.contains(" dormant"), "footer hint missing 'dormant':\n{}", out);
+        // Default Enter label is "jump" (cursor is on the pane row by default).
+        assert!(out.contains("jump"), "default footer should read 'jump':\n{}", out);
+    }
+
+    #[test]
+    fn popup_footer_label_switches_to_open_when_dormant_selected() {
+        let mut app = App::new(Snapshot {
+            entries: vec![],
+            dormant: vec![dormant("only", "default")],
+        });
+        // No panes, so the only selectable row is the dormant one.
+        assert!(app.selected_dormant().is_some());
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("open"), "footer should read 'open' when dormant selected:\n{}", out);
+
+        // Toggle dormant off — selection clears, footer reverts to 'jump'.
+        app.toggle_dormant();
+        let out2 = render_to_string(&app, 100, 24);
+        assert!(out2.contains("jump"), "footer should revert to 'jump' when no dormant selected:\n{}", out2);
+    }
+
+    #[test]
+    fn popup_hides_dormant_when_toggled_off() {
+        let mut app = App::new(Snapshot {
+            entries: vec![pane("%1", "alpha", "claude")],
+            dormant: vec![dormant("hidden-ws", "default")],
+        });
+        let out_on = render_to_string(&app, 100, 24);
+        assert!(out_on.contains("hidden-ws"), "dormant should be visible:\n{}", out_on);
+
+        app.toggle_dormant();
+        let out_off = render_to_string(&app, 100, 24);
+        assert!(!out_off.contains("hidden-ws"),
+            "dormant must be hidden after toggle:\n{}", out_off);
+        assert!(!out_off.contains("Dormant"),
+            "divider must be hidden after toggle:\n{}", out_off);
+    }
+
+    #[test]
+    fn popup_detail_pane_shows_workspace_info_for_dormant() {
+        let app = App::new(Snapshot {
+            entries: vec![],
+            dormant: vec![dormant("my-spike", "rust-base")],
+        });
+        let out = render_to_string(&app, 120, 24);
+        // Detail pane title
+        assert!(out.contains("Workspace"), "detail title 'Workspace' missing:\n{}", out);
+        // Detail rows
+        assert!(out.contains("my-spike"), "name field missing:\n{}", out);
+        assert!(out.contains("rust-base"), "base field missing:\n{}", out);
+        assert!(out.contains("aw-my-spike"), "session preview missing:\n{}", out);
+        assert!(out.contains("will be created"), "session-status hint missing:\n{}", out);
+    }
+
+    #[test]
+    fn parse_iso_like_accepts_t_and_space_separators() {
+        let with_t = parse_iso_like("2026-03-15T14:23:45Z").expect("T separator");
+        let with_space = parse_iso_like("2026-03-15 14:23:45").expect("space separator");
+        assert_eq!(with_t, with_space, "T and space variants should agree");
+
+        // Cross-check against UNIX_EPOCH math: 2026-03-15T14:23:45 UTC vs
+        // 2026-03-15T13:23:45 UTC should differ by exactly 3600 seconds.
+        let later = parse_iso_like("2026-03-15T14:23:45Z").unwrap();
+        let earlier = parse_iso_like("2026-03-15T13:23:45Z").unwrap();
+        assert_eq!(later - earlier, 3600);
+
+        // And 24h apart.
+        let next_day = parse_iso_like("2026-03-16T14:23:45Z").unwrap();
+        assert_eq!(next_day - later, 86_400);
+    }
+
+    #[test]
+    fn parse_iso_like_rejects_garbage() {
+        assert!(parse_iso_like("not a date").is_none());
+        assert!(parse_iso_like("Tue Mar 15 14:23:45 PDT 2026").is_none());
+        assert!(parse_iso_like("").is_none());
+        assert!(parse_iso_like("2026-13-01T00:00:00Z").is_none(), "month=13 invalid");
+    }
+
+    #[test]
+    fn humanize_created_falls_back_to_truncated_raw() {
+        // Locale-dependent date format we can't parse — should be returned
+        // truncated, never panic, never fabricate an age.
+        let raw = "Tue Mar 15 14:23:45 PDT 2026";
+        let out = humanize_created(raw);
+        assert!(out.starts_with("Tue Mar"), "should preserve start of raw: got {:?}", out);
+        assert!(out.chars().count() <= 16, "should truncate to <=16 chars: got {:?}", out);
+    }
+
+    #[test]
+    fn humanize_created_parses_iso_to_age() {
+        // 1970-01-01: very old, must produce "Nd" form.
+        let out = humanize_created("1970-01-02T00:00:00Z");
+        assert!(out.ends_with('d'), "ancient ISO date should produce day-form age: {:?}", out);
+    }
+
+    #[test]
+    fn humanize_created_handles_empty_and_unknown() {
+        assert_eq!(humanize_created(""), "—");
+        assert_eq!(humanize_created("unknown"), "—");
     }
 }
 

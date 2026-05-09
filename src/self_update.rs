@@ -52,6 +52,35 @@ pub fn update(no_confirm: bool) -> Result<()> {
     let exe = std::env::current_exe()
         .context("could not resolve current binary path")?;
 
+    // Workaround for `self_replace` 1.5 when the binary is reached via a
+    // symlink (the common case for Homebrew-installed `aw`). That crate
+    // does:
+    //
+    //   let mut exe = env::current_exe()?;       // /opt/homebrew/bin/aw
+    //   if symlink {
+    //       exe = fs::read_link(exe)?;           // ../Cellar/aw/X.Y.Z/bin/aw
+    //   }
+    //   exe.metadata()?                          // resolves relative-to-CWD,
+    //                                            // not relative-to-symlink-parent
+    //
+    // `fs::read_link` returns the target *as written*, which Homebrew makes
+    // relative. The subsequent `metadata()` then resolves against the
+    // user's CWD — `aw self update` from any directory other than
+    // `/opt/homebrew/bin/` dies with ENOENT.
+    //
+    // chdir into the symlink's parent before invoking the updater so the
+    // relative target resolves correctly. No-op when the binary isn't a
+    // symlink.
+    if std::fs::symlink_metadata(&exe)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        if let Some(parent) = exe.parent() {
+            std::env::set_current_dir(parent)
+                .with_context(|| format!("could not chdir into {}", parent.display()))?;
+        }
+    }
+
     println!("Updating {} (target {})...", exe.display(), target);
     let status = self_update::backends::github::Update::configure()
         .repo_owner(REPO_OWNER)

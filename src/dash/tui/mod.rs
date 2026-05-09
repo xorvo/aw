@@ -35,7 +35,10 @@ use crate::dash::tmux;
 use crate::dash::tui::app::{Action, App};
 
 /// `aw dash` — interactive popup. Returns once the user quits or jumps.
-pub fn run_popup() -> Result<()> {
+///
+/// `start_in_filter` opens the popup with the cursor already in `/`-filter
+/// mode — for tmux bindings that go straight to search.
+pub fn run_popup(start_in_filter: bool) -> Result<()> {
     enable_raw_mode()?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen, Hide)?;
@@ -43,7 +46,7 @@ pub fn run_popup() -> Result<()> {
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = popup_loop(&mut terminal);
+    let result = popup_loop(&mut terminal, start_in_filter);
 
     // Always restore the terminal even if the inner loop returned an error.
     disable_raw_mode().ok();
@@ -57,8 +60,12 @@ pub fn run_popup() -> Result<()> {
 
 fn popup_loop<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
+    start_in_filter: bool,
 ) -> Result<Action> {
     let mut app = App::new(Snapshot::load()?);
+    if start_in_filter {
+        app.enter_filter();
+    }
     let mut last_reload = Instant::now();
 
     loop {

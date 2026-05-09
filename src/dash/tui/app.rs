@@ -333,7 +333,10 @@ fn group_filtered(panes: &[PaneState], filter: &str) -> Vec<(String, Vec<PaneSta
         let mut keep: Vec<(u32, PaneState)> = panes
             .iter()
             .filter_map(|p| {
-                let hay = format!("{} {} {}", p.workspace, p.agent, p.last_prompt);
+                let hay = format!(
+                    "{} {} {} {}",
+                    p.workspace, p.agent, p.last_prompt, p.cwd
+                );
                 let mut buf = Vec::new();
                 let utf32 = nucleo_matcher::Utf32Str::new(&hay, &mut buf);
                 pat.score(utf32, &mut matcher).map(|score| (score, p.clone()))
@@ -502,5 +505,36 @@ mod tests {
 
         let empty_filter = filter_dormant(&pool, "");
         assert_eq!(empty_filter.len(), 3);
+    }
+
+    #[test]
+    fn pane_filter_searches_cwd() {
+        // Two panes with distinguishing cwd substrings; everything else
+        // (workspace/agent/last_prompt) is identical so cwd is the only
+        // signal in the haystack.
+        let mut p1 = pane("%1", "alpha", "claude");
+        p1.cwd = "/Users/horvo/work/billing-svc".into();
+        let mut p2 = pane("%2", "alpha", "claude");
+        p2.cwd = "/Users/horvo/work/marketing-site".into();
+
+        let app = App::new(snap(vec![p1.clone(), p2.clone()], vec![]));
+        // Sanity: with no filter both are visible.
+        let panes_visible: Vec<&PaneState> = app.rows.iter().filter_map(|r| match r {
+            Row::Pane(p) => Some(p),
+            _ => None,
+        }).collect();
+        assert_eq!(panes_visible.len(), 2);
+
+        // Filter by a substring unique to one cwd.
+        let mut app = App::new(snap(vec![p1, p2], vec![]));
+        for c in "billing".chars() {
+            app.filter_push(c);
+        }
+        let panes_visible: Vec<&PaneState> = app.rows.iter().filter_map(|r| match r {
+            Row::Pane(p) => Some(p),
+            _ => None,
+        }).collect();
+        assert_eq!(panes_visible.len(), 1, "cwd filter should narrow to one pane");
+        assert_eq!(panes_visible[0].pane_id, "%1");
     }
 }

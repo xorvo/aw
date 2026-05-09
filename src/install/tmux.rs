@@ -41,6 +41,7 @@ use crate::install::marker;
 // 3.3 as the minimum in CONTRIBUTING.md.
 const TMUX_BLOCK: &str = "\
 bind-key a display-popup -E -w 80% -h 60% -b rounded \"aw dash\"
+bind-key / display-popup -E -w 80% -h 60% -b rounded \"aw dash --filter\"
 bind-key N run-shell \"aw dash next-ready\"
 bind-key C-p run-shell \"aw dash park\"
 bind-key o run-shell \"aw dash sidebar\"

@@ -27,8 +27,8 @@ fn main() -> Result<()> {
         Cmd::Sync => workspace::sync::run(),
         Cmd::OpenHome => workspace::edit::open_home(),
 
-        Cmd::Dash { command } => match command {
-            None => dash::tui::run_popup(),
+        Cmd::Dash { command, filter } => match command {
+            None => dash::tui::run_popup(filter),
             Some(DashCmd::Sidebar) => dash::tui::run_sidebar(),
             Some(DashCmd::StatusLine) => dash::cmd_status_line(),
             Some(DashCmd::NextReady) => dash::cmd_next_ready(),

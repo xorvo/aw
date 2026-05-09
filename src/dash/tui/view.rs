@@ -226,20 +226,19 @@ fn line_for_row(row: &Row, selected: bool) -> Line<'static> {
             } else {
                 truncate(&p.last_prompt, 40)
             };
+            // The "label" column shows whatever's most identifying for the
+            // pane: a `/rename`'d Claude session name (which Claude writes
+            // back to tmux's window_name), the auto-renamed command, etc.
+            // It's our `agent` field — the label_from_tmux cascade already
+            // resolves to the renamed value when set. 18 cols fits common
+            // session names without spilling into the prompt column.
+            let label_col = format!("{:<18}", truncate(&p.agent, 18));
             let mut spans = vec![
                 edge,
                 Span::raw("   "),
                 Span::styled(glyph.to_string(), glyph_style),
                 Span::raw("  "),
-                Span::styled(
-                    format!("{:<7}", p.agent),
-                    Style::default().fg(Color::White),
-                ),
-                Span::raw(" "),
-                Span::styled(
-                    format!("{:<5}", p.pane_id),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(label_col, Style::default().fg(Color::White)),
                 Span::raw(" "),
                 Span::styled(
                     format!("{:<4}", humanize_age(p.last_activity)),

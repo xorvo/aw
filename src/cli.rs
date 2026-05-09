@@ -54,6 +54,10 @@ pub enum Cmd {
 
     /// Tmux-based dashboard for live agent state
     Dash {
+        /// Open the popup directly in filter (search) mode.
+        /// Has no effect when a subcommand is given.
+        #[arg(long)]
+        filter: bool,
         #[command(subcommand)]
         command: Option<DashCmd>,
     },

@@ -1,297 +1,120 @@
-# Agent Workspace (aw)
+# Agent Workspace (`aw`)
 
-A helper to setup sub-workspaces in your local environment optimized for
-AI agents like [Claude Code](https://www.anthropic.com/claude-code), with
-a tmux-based dashboard ([`aw dash`](docs/dash.md)) for live agent state.
+Run multiple AI coding agents in parallel — each in its own isolated repo
+checkout — and watch all of them from a single live dashboard.
 
-## Installation (macOS)
+<!--
+TODO: drop a screenshot or GIF of `aw dash` here. The popup is the
+headline feature; one image does more than the next 100 lines of prose.
+e.g.  ![aw dash](docs/img/dash.png)
+-->
 
-### Homebrew (recommended)
+## Why
+
+- **Parallel agents, no collisions.** Each workspace is a fresh checkout
+  of your repos with its own working tree. Three Claudes can refactor the
+  same codebase at the same time without stepping on each other.
+- **One place to see them all.** `aw dash` shows every agent across every
+  workspace in a tmux popup — what they're working on, who's waiting for
+  input, who's idle. Press `enter` to jump to any of them.
+- **Built for the agents that actually ship.** Hooks for [Claude
+  Code](https://www.anthropic.com/claude-code), Codex, and pi out of the
+  box.
+
+## Install (macOS)
 
 ```bash
 brew tap xorvo/tap
 brew install aw
-aw install all                      # shell hook + agent hooks + tmux bindings
+aw install all          # shell hook + agent hooks + tmux bindings
 ```
 
-The formula pulls a pre-built binary for your architecture and
-declares the runtime dependencies (`git`, `tmux`) so brew handles them
-for you.
-
-### Direct download
+Or grab the binary directly:
 
 ```bash
-TAG=v1.0.0 TRIPLE=$(uname -m | sed 's/arm64/aarch64/')-apple-darwin
+TAG=$(curl -fsSL https://api.github.com/repos/xorvo/aw/releases/latest | jq -r .tag_name)
+TRIPLE=$(uname -m | sed 's/arm64/aarch64/')-apple-darwin
 curl -fsSL "https://github.com/xorvo/aw/releases/download/${TAG}/aw-${TAG}-${TRIPLE}.tar.gz" \
   | tar -xz -C ~/.local/bin
 xattr -d com.apple.quarantine ~/.local/bin/aw 2>/dev/null
 aw install all
 ```
 
-### From source
+Upgrade later with `brew upgrade aw` or `aw self update`.
+
+## 60-second quickstart
 
 ```bash
-git clone https://github.com/xorvo/aw.git && cd aw
-./install.sh
-aw install all
+aw edit-config          # tell aw which repos to clone (one-time)
+aw init                 # materialize the 'default' base workspace
+aw create my-task       # spin up an isolated workspace from the base
+aw start my-task        # cd in (auto-activates env, opens tmux)
+aw dash                 # see live agent state across all workspaces
 ```
 
-Needs a Rust toolchain (<https://rustup.rs>). Mostly useful for hacking
-on `aw` itself; pre-built binaries above are the path for normal use.
+That's it. Run `claude` (or `codex`, `pi`) inside the workspace and the
+dashboard picks it up automatically.
 
-### Upgrades
+## The dashboard
+
+`aw dash` is a tmux popup TUI showing every active agent, grouped by
+workspace.
+
+```
+↵ jump to pane           p  park (mute)
+/ filter                 n  next-ready (oldest waiting)
+H toggle dormant         q  quit
+```
+
+Other entry points:
 
 ```bash
-brew upgrade aw                     # if installed via Homebrew
-# or
-aw self update                      # works regardless of how you installed
+aw dash sidebar          # narrow always-on side pane
+aw dash status-line      # one-liner for tmux's status-right
+aw dash next-ready       # one-shot: jump to oldest waiting agent
+aw dash --filter         # open straight into search mode
 ```
 
-> Migrating from a previous bash-based install? See
-> [`docs/migration.md`](docs/migration.md).
+The default tmux bindings (after `aw install tmux-bindings`) are
+`prefix + a` for the popup and `prefix + /` for filter mode. Full
+keymap, hook contract, and state schema in
+[`docs/dash.md`](docs/dash.md).
 
-This will:
+## Configure
 
-1. Install the `aw` command to `~/.local/bin` (or `$AW_BIN_DIR`)
-2. Create installation directory at `~/.agent-workspaces` (or `$AW_INSTALL_DIR`)
-3. Create workspaces directory at `~/agent-workspaces` (or `$AW_WORKSPACES_DIR`)
-4. Copy configuration template and scripts
-5. Offer to set up shell integration (auto-activation, completion, prompt indicator)
-
-## Configuration
-
-The configuration file is located at `$AW_INSTALL_DIR/config.yaml` (default: `~/.agent-workspaces/config.yaml`).
+`~/.agent-workspaces/config.yaml` (or `aw edit-config`):
 
 ```yaml
-# Example configuration
 default:
   repos:
     - git@github.com:your-org/repo1.git
     - git@github.com:your-org/repo2.git
   local_files:
     - ~/projects/local-project
-    - "~/projects/infrastructure -> infra"  # Copy with custom destination name
+    - "~/projects/infrastructure -> infra"  # copy with renamed destination
 
 development:
   repos:
     - git@github.com:your-org/dev-repo.git
 ```
 
-## Usage
+Each top-level key is a "base" — a template you can create workspaces
+from with `aw create <name> --base <key>`. See
+[`docs/base-workspaces.md`](docs/base-workspaces.md).
 
-### 1. Initialize a Base Workspace
+## Custom hooks
 
-Base workspaces are templates stored in `$AW_INSTALL_DIR/base/`:
+Drop `.sh` files in `~/.agent-workspaces/hooks.d/` (global) or
+`<workspace>/.agent-workspace/hooks.d/` (per-workspace). They're sourced
+when you enter a workspace, so you can wrap commands, set env vars, or
+guard against dangerous operations (e.g. blocking `kubectl --context=production`).
 
-```bash
-aw init                  # Initialize 'default' base
-aw init development     # Initialize 'development' base
-```
+## Going further
 
-This clones repos and copies files according to your config into `~/.agent-workspaces/base/[name]/`.
-
-### 2. Create a Workspace
-
-Create actual workspaces in `$AW_WORKSPACES_DIR`:
-
-```bash
-aw create my-feature              # Create from 'default' base
-aw create my-feature --base dev   # Create from 'dev' base
-```
-
-This creates a new workspace at `~/agent-workspaces/my-feature/`.
-
-### 3. Start Working
-
-```bash
-aw start my-feature              # Enter workspace (auto-activates)
-aw start my-feature --tmux      # Start in tmux session
-```
-
-When you enter a workspace:
-
-- Sets `AGENT_WORKSPACE` to the workspace path
-- Sets `AGENT_WORKSPACE_NAME` to the workspace name
-- Sources custom hooks from `hooks.d/` (command wrappers, env vars, etc.)
-- Shows workspace in your shell prompt (if configured)
-
-### 4. List and Manage
-
-```bash
-aw list                  # List all workspaces
-aw delete my-feature     # Delete a workspace
-```
-
-### 5. Dashboard
-
-`aw dash` opens a tmux popup TUI showing every active agent across all your
-workspaces — what they're doing, who's waiting for input, and one-keystroke
-jump to any pane:
-
-```bash
-aw dash                  # full-screen popup (or bind to prefix + a)
-aw dash sidebar          # narrow always-on side pane
-aw dash status-line      # one-liner for tmux's status-right
-aw dash next-ready       # jump to the oldest waiting agent
-aw dash json             # snapshot to stdout (for scripts)
-```
-
-State comes from agent hooks (Claude Code, Codex, pi) wired by
-`aw install hooks --agent <name>`. See [`docs/dash.md`](docs/dash.md) for
-the full key map, hook contract, and state schema.
-
-### 6. Quick Access Commands
-
-```bash
-aw edit-config           # Open config file in editor
-aw edit-base default     # Browse/edit base workspace
-aw open-home            # Browse installation directory
-```
-
-## Shell Integration Features
-
-### Auto-Activation
-
-When you `cd` into a workspace, it automatically:
-
-- Sets environment variables
-- Sources workspace hooks
-- Updates your shell prompt
-
-### Prompt Integration
-
-Shows `[◉ workspace-name]` in your prompt:
-
-- **Powerlevel10k**: Add `agent_workspace` to `~/.p10k.zsh` prompt elements
-- **Oh-My-Zsh**: Automatic right prompt integration
-- **Starship**: Run `$AW_INSTALL_DIR/bin/setup-starship.sh`
-- **Tmux**: Run `$AW_INSTALL_DIR/bin/setup-tmux-status.sh`
-- **Native Zsh/Bash**: Automatic integration
-
-### Tab Completion
-
-Complete workspace names and command options:
-
-```bash
-aw create <TAB>          # Complete base names
-aw start <TAB>           # Complete workspace names
-aw delete <TAB>          # Complete workspace names
-```
-
-## Custom Hooks
-
-Extend workspace behavior with shell scripts in `hooks.d/` directories. Hooks are sourced on workspace activation.
-
-```bash
-# Global hooks (apply to all workspaces)
-mkdir -p ~/.agent-workspaces/hooks.d
-
-# Example: wrap kubectl to block production context
-cat > ~/.agent-workspaces/hooks.d/kubectl-guard.sh << 'HOOK'
-kubectl() {
-    if [[ "$*" =~ --context=production ]]; then
-        echo "❌ Production context blocked in agent workspace" >&2
-        return 1
-    fi
-    command kubectl "$@"
-}
-HOOK
-
-# Per-workspace hooks
-mkdir -p ~/agent-workspaces/my-workspace/.agent-workspace/hooks.d
-```
-
-Global hooks run first, then per-workspace hooks (which can override).
-
-## Environment Variables
-
-Customize the directory structure:
-
-```bash
-# In your shell config (.zshrc, .bashrc)
-export AW_INSTALL_DIR="$HOME/.config/agent-workspace"  # Change installation directory
-export AW_WORKSPACES_DIR="$HOME/work/ai-workspaces" # Change workspaces location
-export AW_BIN_DIR="/usr/local/bin"                  # Change CLI install location
-```
-
-## Directory Structure
-
-In general, `aw` will only be touching the following 3 directories.
-
-| Directory                  | Environment Variable | Default Location      | Purpose                                                |
-| -------------------------- | -------------------- | --------------------- | ------------------------------------------------------ |
-| **Installation Directory** | `AW_INSTALL_DIR`     | `~/.agent-workspaces` | Configuration, base workspaces, scripts, and templates |
-| **Workspaces**             | `AW_WORKSPACES_DIR`  | `~/agent-workspaces`  | Your actual working workspaces                         |
-| **CLI Binary**             | `AW_BIN_DIR`         | `~/.local/bin`        | Where the `aw` command is installed                    |
-
-## File Structure Overview
-
-```
-~/.agent-workspaces/              # Installation Directory (AW_INSTALL_DIR)
-├── config.yaml                   # Your configuration
-├── hooks.d/                      # Global hooks (sourced for all workspaces)
-│   └── my-guard.sh
-├── base/                         # Base workspace templates
-│   ├── default/                  # Default base workspace
-│   │   ├── .agent-workspace/    # Template files & repo cache
-│   │   ├── CLAUDE.md            # Agent instructions
-│   │   └── AGENTS.md
-│   └── development/             # Another base workspace
-└── bin/                         # Shell integration scripts
-    ├── aw-shell-hook.sh
-    ├── aw-completion.sh
-    └── setup-*.sh
-
-~/agent-workspaces/              # Workspaces Directory (AW_WORKSPACES_DIR)
-├── my-feature/                  # A workspace
-│   ├── repo1/
-│   ├── repo2/
-│   ├── CLAUDE.md                # Agent instructions (symlinked from base)
-│   ├── AGENTS.md
-│   └── .agent-workspace/
-│       ├── name                 # Workspace name
-│       ├── base                 # Base it was created from
-│       ├── created              # Creation timestamp
-│       └── hooks.d/             # Per-workspace hooks
-└── bugfix-123/                  # Another workspace
-
-~/.local/bin/                    # CLI Binary Directory (AW_BIN_DIR)
-└── aw                           # The main command
-```
-
-## Tips
-
-1. **Base Workspaces**: Think of these as templates. Set them up once, create many workspaces from them.
-
-2. **Workspace Lifecycle**: Workspaces are meant to be ephemeral. Create, use, delete per task.
-
-3. **Multiple Bases**: Create different bases for different project types or teams.
-
-4. **Custom Locations**: Set environment variables to organize directories your way.
-
-## Troubleshooting
-
-### Command Not Found
-
-If `aw` command is not found, ensure `$AW_BIN_DIR` is in your PATH:
-
-```bash
-export PATH="$PATH:$HOME/.local/bin"
-```
-
-### Workspace Not Auto-Activating
-
-Ensure shell integration is sourced:
-
-```bash
-source $AW_INSTALL_DIR/bin/aw-shell-hook.sh
-```
-
-### Configuration Issues
-
-Check your config file:
-
-```bash
-aw config                # Show config location
-aw edit-config          # Edit configuration
-```
+- [Architecture & directory layout](docs/architecture.md)
+- [Shell integration](docs/shell-integration.md) — auto-activation, prompt frameworks
+- [Prompt customization](docs/prompt-customization.md) — p10k, starship, oh-my-zsh
+- [Quick command reference](docs/quick-reference.md)
+- [Performance notes](docs/performance-considerations.md) — large-repo handling
+- [Migrating from the bash CLI](docs/migration.md)
+- [Contributing](CONTRIBUTING.md) — building from source, the release process

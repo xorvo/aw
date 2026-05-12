@@ -2,12 +2,13 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::dash::tui::app::{Action, App, Mode};
+use crate::dash::tui::app::{Action, App, CreateField, Mode};
 
 pub fn on_key(app: &mut App, key: KeyEvent) -> Action {
     match app.mode {
         Mode::Filter => filter_mode(app, key),
         Mode::Normal => normal_mode(app, key),
+        Mode::Create => create_mode(app, key),
     }
 }
 
@@ -83,6 +84,73 @@ fn normal_mode(app: &mut App, key: KeyEvent) -> Action {
         }
         (KeyCode::Char('/'), _) => {
             app.enter_filter();
+            Action::Continue
+        }
+        (KeyCode::Char('c'), _) => {
+            app.enter_create();
+            Action::Continue
+        }
+        _ => Action::Continue,
+    }
+}
+
+fn create_mode(app: &mut App, key: KeyEvent) -> Action {
+    let field = match app.create.as_ref().map(|f| f.field) {
+        Some(f) => f,
+        None => return Action::Continue,
+    };
+    match key.code {
+        KeyCode::Esc => {
+            app.exit_create();
+            Action::Continue
+        }
+        KeyCode::Enter => app.submit_create(),
+        KeyCode::Tab | KeyCode::BackTab => {
+            app.with_create(|f| {
+                f.field = match f.field {
+                    CreateField::Name => CreateField::Base,
+                    CreateField::Base => CreateField::Name,
+                };
+            });
+            Action::Continue
+        }
+        KeyCode::Backspace if field == CreateField::Name => {
+            app.with_create(|f| {
+                f.name.pop();
+            });
+            Action::Continue
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.with_create(|f| {
+                if f.field == CreateField::Name {
+                    f.name.clear();
+                }
+            });
+            Action::Continue
+        }
+        KeyCode::Up | KeyCode::Char('k') if field == CreateField::Base => {
+            app.with_create(|f| {
+                if !f.bases.is_empty() && f.base_idx > 0 {
+                    f.base_idx -= 1;
+                }
+            });
+            Action::Continue
+        }
+        KeyCode::Down | KeyCode::Char('j') if field == CreateField::Base => {
+            app.with_create(|f| {
+                if !f.bases.is_empty() && f.base_idx + 1 < f.bases.len() {
+                    f.base_idx += 1;
+                }
+            });
+            Action::Continue
+        }
+        KeyCode::Char(c)
+            if field == CreateField::Name
+                && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            app.with_create(|f| {
+                f.name.push(c);
+            });
             Action::Continue
         }
         _ => Action::Continue,
@@ -181,6 +249,167 @@ mod tests {
         let was = app.show_dormant;
         let _ = on_key(&mut app, key(KeyCode::Char('h')));
         assert_eq!(app.show_dormant, was, "lowercase h must not affect dormant");
+    }
+
+    // ---- Create-mode keymap ----
+
+    use crate::dash::tui::app::{CreateField, CreateForm};
+
+    fn shim_create_form(app: &mut App, bases: Vec<&str>) {
+        // Bypass enter_create's disk reads — tests don't have a real
+        // config or workspaces dir. Construct the form directly.
+        app.create = Some(CreateForm {
+            name: String::new(),
+            bases: bases.into_iter().map(String::from).collect(),
+            base_idx: 0,
+            existing: std::collections::HashSet::new(),
+            field: CreateField::Name,
+            error: None,
+        });
+        app.mode = Mode::Create;
+    }
+
+    #[test]
+    fn typing_in_name_field_appends_chars() {
+        let mut app = App::new(Snapshot { entries: vec![], dormant: vec![] });
+        shim_create_form(&mut app, vec!["default"]);
+        for ch in "my-feature".chars() {
+            let _ = on_key(&mut app, key(KeyCode::Char(ch)));
+        }
+        assert_eq!(app.create.as_ref().unwrap().name, "my-feature");
+    }
+
+    #[test]
+    fn backspace_in_name_field_pops_last_char() {
+        let mut app = App::new(Snapshot { entries: vec![], dormant: vec![] });
+        shim_create_form(&mut app, vec!["default"]);
+        for ch in "abc".chars() {
+            let _ = on_key(&mut app, key(KeyCode::Char(ch)));
+        }
+        let _ = on_key(&mut app, key(KeyCode::Backspace));
+        assert_eq!(app.create.as_ref().unwrap().name, "ab");
+    }
+
+    #[test]
+    fn tab_switches_field_focus() {
+        let mut app = App::new(Snapshot { entries: vec![], dormant: vec![] });
+        shim_create_form(&mut app, vec!["default", "python"]);
+        assert_eq!(app.create.as_ref().unwrap().field, CreateField::Name);
+        let _ = on_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.create.as_ref().unwrap().field, CreateField::Base);
+        let _ = on_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.create.as_ref().unwrap().field, CreateField::Name);
+    }
+
+    #[test]
+    fn arrows_move_base_selection_when_focused() {
+        let mut app = App::new(Snapshot { entries: vec![], dormant: vec![] });
+        shim_create_form(&mut app, vec!["a", "b", "c"]);
+        let _ = on_key(&mut app, key(KeyCode::Tab)); // focus Base
+        let _ = on_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.create.as_ref().unwrap().base_idx, 1);
+        let _ = on_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.create.as_ref().unwrap().base_idx, 2);
+        // Clamped at the bottom.
+        let _ = on_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.create.as_ref().unwrap().base_idx, 2);
+        // Up works too.
+        let _ = on_key(&mut app, key(KeyCode::Up));
+        assert_eq!(app.create.as_ref().unwrap().base_idx, 1);
+    }
+
+    #[test]
+    fn esc_cancels_create_form() {
+        let mut app = App::new(Snapshot { entries: vec![], dormant: vec![] });
+        shim_create_form(&mut app, vec!["default"]);
+        let _ = on_key(&mut app, key(KeyCode::Esc));
+        assert!(app.create.is_none());
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn enter_submits_valid_form_to_create_action() {
+        let mut app = App::new(Snapshot { entries: vec![], dormant: vec![] });
+        shim_create_form(&mut app, vec!["default", "python"]);
+        for ch in "my-task".chars() {
+            let _ = on_key(&mut app, key(KeyCode::Char(ch)));
+        }
+        let _ = on_key(&mut app, key(KeyCode::Tab));
+        let _ = on_key(&mut app, key(KeyCode::Down)); // select python
+        let action = on_key(&mut app, key(KeyCode::Enter));
+        match action {
+            Action::CreateWorkspace { name, base } => {
+                assert_eq!(name, "my-task");
+                assert_eq!(base, "python");
+            }
+            other => panic!("expected CreateWorkspace, got {:?}", other),
+        }
+        // Form cleared on successful submit.
+        assert!(app.create.is_none());
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn enter_on_empty_name_keeps_form_with_error() {
+        let mut app = App::new(Snapshot { entries: vec![], dormant: vec![] });
+        shim_create_form(&mut app, vec!["default"]);
+        let action = on_key(&mut app, key(KeyCode::Enter));
+        assert!(matches!(action, Action::Continue));
+        let f = app.create.as_ref().expect("form retained on invalid submit");
+        assert!(f.error.is_some());
+        assert!(f.error.as_deref().unwrap().contains("name"));
+    }
+
+    #[test]
+    fn enter_on_conflicting_name_shows_error() {
+        let mut app = App::new(Snapshot { entries: vec![], dormant: vec![] });
+        shim_create_form(&mut app, vec!["default"]);
+        // Inject a conflict directly.
+        app.create.as_mut().unwrap().existing.insert("taken".into());
+        for ch in "taken".chars() {
+            let _ = on_key(&mut app, key(KeyCode::Char(ch)));
+        }
+        let action = on_key(&mut app, key(KeyCode::Enter));
+        assert!(matches!(action, Action::Continue));
+        let err = app.create.as_ref().and_then(|f| f.error.clone()).unwrap_or_default();
+        assert!(err.contains("already exists"), "got: {}", err);
+    }
+
+    #[test]
+    fn enter_with_slash_in_name_shows_error() {
+        let mut app = App::new(Snapshot { entries: vec![], dormant: vec![] });
+        shim_create_form(&mut app, vec!["default"]);
+        for ch in "bad/name".chars() {
+            let _ = on_key(&mut app, key(KeyCode::Char(ch)));
+        }
+        let action = on_key(&mut app, key(KeyCode::Enter));
+        assert!(matches!(action, Action::Continue));
+        let err = app.create.as_ref().and_then(|f| f.error.clone()).unwrap_or_default();
+        assert!(err.contains("'/'"), "got: {}", err);
+    }
+
+    #[test]
+    fn enter_with_no_bases_configured_shows_error() {
+        let mut app = App::new(Snapshot { entries: vec![], dormant: vec![] });
+        shim_create_form(&mut app, vec![]); // empty bases
+        for ch in "fine-name".chars() {
+            let _ = on_key(&mut app, key(KeyCode::Char(ch)));
+        }
+        let action = on_key(&mut app, key(KeyCode::Enter));
+        assert!(matches!(action, Action::Continue));
+        let err = app.create.as_ref().and_then(|f| f.error.clone()).unwrap_or_default();
+        assert!(err.contains("no bases"), "got: {}", err);
+    }
+
+    #[test]
+    fn lowercase_c_in_normal_enters_create_mode() {
+        let mut app = App::new(Snapshot { entries: vec![], dormant: vec![] });
+        assert_eq!(app.mode, Mode::Normal);
+        let _ = on_key(&mut app, key(KeyCode::Char('c')));
+        assert_eq!(app.mode, Mode::Create);
+        // The form is populated (bases may be empty in a test sandbox,
+        // but the form itself must exist for the renderer to see it).
+        assert!(app.create.is_some());
     }
 
     #[test]

@@ -75,6 +75,14 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_body(f: &mut Frame, area: Rect, app: &App) {
+    // Create mode owns the entire body — replacing the agents/details
+    // split with a focused form keeps the user's attention on the task
+    // and avoids a layout that's stretched thin across three sections.
+    if app.mode == Mode::Create {
+        render_create(f, area, app);
+        return;
+    }
+
     let chunks = if app.show_preview {
         Layout::default()
             .direction(Direction::Horizontal)
@@ -89,6 +97,102 @@ fn render_body(f: &mut Frame, area: Rect, app: &App) {
 
     render_list(f, chunks[0], app);
     render_detail(f, chunks[1], app);
+}
+
+fn render_create(f: &mut Frame, area: Rect, app: &App) {
+    use crate::dash::tui::app::CreateField;
+
+    let form = match app.create.as_ref() {
+        Some(f) => f,
+        None => return,
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .padding(Padding::horizontal(2))
+        .title(Span::styled(
+            " New workspace ",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Build the form content as a list of Lines. We lay out vertically:
+    //   <blank>
+    //   Name:  <input>
+    //   <blank>
+    //   Base:  ▾ <selected>
+    //          • option
+    //          • option
+    //   <blank>
+    //   <error if any>
+    let label_style = Style::default().fg(Color::DarkGray);
+    let active = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let inactive = Style::default().fg(Color::White);
+
+    let name_style = if form.field == CreateField::Name { active } else { inactive };
+    let base_style = if form.field == CreateField::Base { active } else { inactive };
+
+    let cursor = if form.field == CreateField::Name { "│" } else { " " };
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled("Name:  ", label_style),
+        Span::styled(form.name.clone(), name_style),
+        Span::styled(cursor.to_string(), Style::default().fg(Color::Cyan)),
+    ]));
+    lines.push(Line::raw(""));
+
+    if form.bases.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("Base:  ", label_style),
+            Span::styled(
+                "(no bases configured — run `aw init` first)",
+                Style::default().fg(Color::Red),
+            ),
+        ]));
+    } else {
+        let chosen = form.bases.get(form.base_idx).map(String::as_str).unwrap_or("");
+        lines.push(Line::from(vec![
+            Span::styled("Base:  ", label_style),
+            Span::styled(format!("▾ {}", chosen), base_style),
+        ]));
+        // Show all options when the Base field has focus — otherwise just
+        // the chosen one. Keeps the form compact when focus is elsewhere.
+        if form.field == CreateField::Base {
+            for (i, b) in form.bases.iter().enumerate() {
+                let marker = if i == form.base_idx { "▌ " } else { "  " };
+                let marker_style = if i == form.base_idx {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default()
+                };
+                let opt_style = if i == form.base_idx {
+                    Style::default().fg(Color::White)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                lines.push(Line::from(vec![
+                    Span::raw("       "),
+                    Span::styled(marker, marker_style),
+                    Span::styled(b.clone(), opt_style),
+                ]));
+            }
+        }
+    }
+
+    if let Some(err) = form.error.as_deref() {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![Span::styled(
+            format!("❌ {}", err),
+            Style::default().fg(Color::Red),
+        )]));
+    }
+
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn render_list(f: &mut Frame, area: Rect, app: &App) {
@@ -396,6 +500,26 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(Color::DarkGray),
             ),
         ]),
+        Mode::Create => {
+            let key_style = Style::default().fg(Color::Cyan);
+            let act_style = Style::default().fg(Color::DarkGray);
+            let sep = Span::styled("  ·  ", act_style);
+            let pairs: &[(&str, &str)] = &[
+                ("↵", "create"),
+                ("⇥", "switch field"),
+                ("esc", "cancel"),
+            ];
+            let mut spans: Vec<Span> = Vec::with_capacity(pairs.len() * 4);
+            for (i, (k, a)) in pairs.iter().enumerate() {
+                if i > 0 {
+                    spans.push(sep.clone());
+                }
+                spans.push(Span::styled(k.to_string(), key_style));
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(a.to_string(), act_style));
+            }
+            Line::from(spans)
+        }
         Mode::Normal => {
             let key_style = Style::default().fg(Color::Cyan);
             let act_style = Style::default().fg(Color::DarkGray);
@@ -413,6 +537,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                 ("↵", enter_action),
                 ("⇥", "preview"),
                 ("/", "filter"),
+                ("c", "new"),
                 ("p", "park"),
                 ("n", "next-ready"),
                 ("r", "refresh"),
@@ -562,7 +687,9 @@ mod tests {
             entries: vec![pane("%1", "alpha", "claude")],
             dormant: vec![dormant("scratch", "default"), dormant("backlog", "python")],
         });
-        let out = render_to_string(&app, 100, 24);
+        // 130 cols so the full footer (which grew with `c new`) fits
+        // without truncation; the assertions below match on key fragments.
+        let out = render_to_string(&app, 130, 24);
         // Active workspace header + pane row
         assert!(out.contains("alpha"), "active workspace header missing:\n{}", out);
         // Dormant divider header
@@ -658,6 +785,52 @@ mod tests {
         }
         let back = render_to_string(&app, 80, 24);
         assert!(back.contains("agent-00"), "first pane visible again after scrolling up:\n{}", back);
+    }
+
+    #[test]
+    fn create_form_renders_name_and_base_options() {
+        use crate::dash::tui::app::{CreateField, CreateForm};
+        let mut app = App::new(Snapshot { entries: vec![], dormant: vec![] });
+        app.create = Some(CreateForm {
+            name: "my-task".into(),
+            bases: vec!["default".into(), "python".into(), "web".into()],
+            base_idx: 1,
+            existing: std::collections::HashSet::new(),
+            field: CreateField::Base, // focus Base so all options render
+            error: Some("name cannot contain '/'".into()),
+        });
+        app.mode = crate::dash::tui::app::Mode::Create;
+
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("New workspace"), "title missing:\n{}", out);
+        assert!(out.contains("Name:"), "name label missing:\n{}", out);
+        assert!(out.contains("my-task"), "name value missing:\n{}", out);
+        assert!(out.contains("Base:"), "base label missing:\n{}", out);
+        assert!(out.contains("▾ python"), "selected base missing:\n{}", out);
+        assert!(out.contains("default"), "first option missing:\n{}", out);
+        assert!(out.contains("web"), "third option missing:\n{}", out);
+        assert!(out.contains("name cannot contain"), "error missing:\n{}", out);
+        // Footer should be the Create-mode hint
+        assert!(out.contains("↵ create"), "create-mode footer missing:\n{}", out);
+        assert!(out.contains("⇥ switch field"), "switch-field hint missing:\n{}", out);
+    }
+
+    #[test]
+    fn create_form_with_empty_bases_shows_init_hint() {
+        use crate::dash::tui::app::{CreateField, CreateForm};
+        let mut app = App::new(Snapshot { entries: vec![], dormant: vec![] });
+        app.create = Some(CreateForm {
+            name: String::new(),
+            bases: vec![],
+            base_idx: 0,
+            existing: std::collections::HashSet::new(),
+            field: CreateField::Name,
+            error: None,
+        });
+        app.mode = crate::dash::tui::app::Mode::Create;
+
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("no bases configured"), "init hint missing:\n{}", out);
     }
 
     #[test]

@@ -26,6 +26,33 @@ pub enum Row {
 pub enum Mode {
     Normal,
     Filter,
+    /// Active when `app.create` is `Some`. The form state lives there so
+    /// `Mode` can stay `Copy`.
+    Create,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateField {
+    Name,
+    Base,
+}
+
+/// State for the in-popup "new workspace" form. Created when the user
+/// presses `c` from Normal mode; cleared on Esc or successful submit.
+#[derive(Debug, Clone)]
+pub struct CreateForm {
+    pub name: String,
+    /// Bases pulled from the config when the form opened. Empty list is
+    /// a real possibility (fresh install) — the form should still render
+    /// and call it out instead of letting submit no-op.
+    pub bases: Vec<String>,
+    pub base_idx: usize,
+    /// Names of workspaces already on disk, for conflict validation.
+    pub existing: std::collections::HashSet<String>,
+    pub field: CreateField,
+    /// Transient validation message shown below the form. Set on a failed
+    /// submit; cleared on the next keystroke.
+    pub error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -39,6 +66,8 @@ pub enum Action {
     /// Open a dormant workspace by name (creates the `aw-<name>` session
     /// if needed and switches to it).
     OpenWorkspace(String),
+    /// Create a brand-new workspace from a base, then open it.
+    CreateWorkspace { name: String, base: String },
 }
 
 pub struct App {
@@ -57,6 +86,8 @@ pub struct App {
     pub scroll_offset: Cell<u16>,
     /// Cached snapshot — for `apply()` resolving Jump/Park targets.
     pub snapshot: Snapshot,
+    /// In-popup workspace-creation form. `Some` iff `mode == Mode::Create`.
+    pub create: Option<CreateForm>,
 }
 
 impl App {
@@ -71,6 +102,7 @@ impl App {
             show_dormant: true,
             scroll_offset: Cell::new(0),
             snapshot: snap,
+            create: None,
         };
         app.rebuild_rows();
         app
@@ -242,6 +274,86 @@ impl App {
 
     pub fn exit_filter(&mut self) {
         self.mode = Mode::Normal;
+    }
+
+    /// Enter the workspace-creation form. Loads bases from the config and
+    /// existing workspace names from disk for conflict validation. Both
+    /// reads are best-effort: an empty config or missing dir just means
+    /// the form shows up with no bases or no conflicts, never an error.
+    pub fn enter_create(&mut self) {
+        let bases: Vec<String> = match crate::paths::Paths::from_env()
+            .ok()
+            .and_then(|p| crate::config::Config::load(&p.config_file).ok())
+        {
+            Some(cfg) => cfg.base_names().into_iter().map(String::from).collect(),
+            None => Vec::new(),
+        };
+        let existing: std::collections::HashSet<String> =
+            crate::workspace::listing::enumerate_workspaces()
+                .into_iter()
+                .map(|m| m.name)
+                .collect();
+        self.create = Some(CreateForm {
+            name: String::new(),
+            bases,
+            base_idx: 0,
+            existing,
+            field: CreateField::Name,
+            error: None,
+        });
+        self.mode = Mode::Create;
+    }
+
+    pub fn exit_create(&mut self) {
+        self.create = None;
+        self.mode = Mode::Normal;
+    }
+
+    /// Mutate the form via the supplied closure; clears any prior error
+    /// (a keystroke counts as "user is fixing the problem").
+    pub fn with_create<F: FnOnce(&mut CreateForm)>(&mut self, f: F) {
+        if let Some(ref mut form) = self.create {
+            form.error = None;
+            f(form);
+        }
+    }
+
+    /// Validate the form and produce a `CreateWorkspace` action on
+    /// success. On failure, store the error on the form (rendered below
+    /// the inputs) and return `Action::Continue`.
+    pub fn submit_create(&mut self) -> Action {
+        let (name, base) = match self.create.as_ref() {
+            Some(f) => {
+                let name = f.name.trim().to_string();
+                if name.is_empty() {
+                    return self.fail_create("name cannot be empty");
+                }
+                if name.contains('/') || name.contains(' ') {
+                    return self.fail_create("name cannot contain '/' or spaces");
+                }
+                if f.existing.contains(&name) {
+                    return self.fail_create(&format!("workspace '{}' already exists", name));
+                }
+                let base = match f.bases.get(f.base_idx) {
+                    Some(b) => b.clone(),
+                    None => return self.fail_create("no bases configured; run `aw init` first"),
+                };
+                (name, base)
+            }
+            None => return Action::Continue,
+        };
+        // Clear the form before yielding the action; handle_exit_action
+        // will tear down the popup either way.
+        self.create = None;
+        self.mode = Mode::Normal;
+        Action::CreateWorkspace { name, base }
+    }
+
+    fn fail_create(&mut self, msg: &str) -> Action {
+        if let Some(ref mut f) = self.create {
+            f.error = Some(msg.to_string());
+        }
+        Action::Continue
     }
 
     pub fn filter_push(&mut self, c: char) {

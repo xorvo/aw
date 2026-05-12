@@ -83,7 +83,8 @@ fn popup_loop<B: ratatui::backend::Backend>(
                     | Action::Park(_)
                     | Action::Refresh
                     | Action::NextReady
-                    | Action::OpenWorkspace(_) => {
+                    | Action::OpenWorkspace(_)
+                    | Action::CreateWorkspace { .. } => {
                         if let Some(after) = app.apply(action) {
                             return Ok(after);
                         }
@@ -115,6 +116,19 @@ fn handle_exit_action(a: Action) {
             // is restored. Exec-replaces our process when outside tmux.
             if let Err(e) = crate::workspace::start::open_or_attach_session(&name) {
                 eprintln!("aw: could not open workspace '{}': {}", name, e);
+            }
+        }
+        Action::CreateWorkspace { name, base } => {
+            // The alt-screen has been torn down by run_popup, so emoji
+            // progress from create::run prints to the popup's tty
+            // normally. Once create succeeds we transition into the new
+            // session.
+            if let Err(e) = crate::workspace::create::run(&name, &base) {
+                eprintln!("aw: could not create workspace '{}': {}", name, e);
+                return;
+            }
+            if let Err(e) = crate::workspace::start::open_or_attach_session(&name) {
+                eprintln!("aw: created '{}' but could not open: {}", name, e);
             }
         }
         _ => {}

@@ -37,6 +37,14 @@ pub struct PaneState {
     /// in the per-pane JSON.
     #[serde(skip)]
     pub parked: bool,
+    /// Display label resolved fresh from tmux (`window_name` →
+    /// `pane_title` → `pane_current_command`) on every snapshot load.
+    /// Surfaces a user-renamed Claude session (`/rename …` writes to both
+    /// window_name and pane_title) in the row and the `/` filter haystack.
+    ///
+    /// Not persisted — the on-disk value would be stale by next load.
+    #[serde(skip)]
+    pub label: String,
 }
 
 impl PaneState {
@@ -53,6 +61,7 @@ impl PaneState {
             last_activity: now_epoch(),
             last_prompt: String::new(),
             parked: false,
+            label: String::new(),
         }
     }
 
@@ -160,6 +169,12 @@ impl Snapshot {
                         .as_ref()
                         .map(|d| d.join(&tp.pane_id).exists())
                         .unwrap_or(false);
+                    // `label` is always refreshed from tmux so a
+                    // `/rename`'d Claude session (which writes to
+                    // window_name + pane_title) shows up in the row and
+                    // is searchable via `/`, even after the hook has
+                    // stamped `agent = "claude"` over the JSON.
+                    let label = crate::dash::tmux::label_from_tmux(tp);
                     let row = match hook_state.remove(&tp.pane_id) {
                         Some(mut s) => {
                             // Refresh ground-truth fields from tmux; keep
@@ -169,6 +184,7 @@ impl Snapshot {
                             s.workspace = workspace;
                             s.cwd = tp.path.clone();
                             s.parked = parked_now;
+                            s.label = label;
                             s
                         }
                         None => PaneState {
@@ -177,16 +193,16 @@ impl Snapshot {
                             session: tp.session.clone(),
                             workspace,
                             cwd: tp.path.clone(),
-                            // Stable label cascade: pane_title → window_name
-                            // → pane_current_command. Matches the "good
-                            // human friendly name" tmux's status bar shows,
-                            // not the volatile foreground process.
-                            agent: crate::dash::tmux::label_from_tmux(tp),
+                            // No hook fired in this pane yet, so we have
+                            // no agent-type signal — fall back to the
+                            // tmux label as the agent column too.
+                            agent: label.clone(),
                             status: Status::Idle,
                             last_event: String::new(),
                             last_activity: 0,
                             last_prompt: String::new(),
                             parked: parked_now,
+                            label,
                         },
                     };
                     entries.push(row);

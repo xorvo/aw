@@ -118,6 +118,7 @@ mod tests {
             last_activity: 0,
             last_prompt: String::new(),
             parked: false,
+            label: String::new(),
         }
     }
 

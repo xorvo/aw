@@ -382,9 +382,13 @@ fn group_filtered(panes: &[PaneState], filter: &str) -> Vec<(String, Vec<PaneSta
         let mut keep: Vec<(u32, PaneState)> = panes
             .iter()
             .filter_map(|p| {
+                // Include both `agent` (claude/codex/pi — so `/codex`
+                // matches all codex panes) and `label` (the tmux
+                // window_name / pane_title, which carries a `/rename`'d
+                // Claude session name).
                 let hay = format!(
-                    "{} {} {} {}",
-                    p.workspace, p.agent, p.last_prompt, p.cwd
+                    "{} {} {} {} {}",
+                    p.workspace, p.agent, p.label, p.last_prompt, p.cwd
                 );
                 let mut buf = Vec::new();
                 let utf32 = nucleo_matcher::Utf32Str::new(&hay, &mut buf);
@@ -428,6 +432,7 @@ mod tests {
             last_activity: 0,
             last_prompt: String::new(),
             parked: false,
+            label: String::new(),
         }
     }
 
@@ -585,6 +590,48 @@ mod tests {
         assert_eq!(displayed_line_index(&app.rows, 5), 7); // gamma dormant
 
         assert_eq!(total_displayed_lines(&app.rows), 8);
+    }
+
+    #[test]
+    fn pane_filter_searches_label_renamed_session() {
+        // Regression: a hooked Claude pane's `agent` stays as "claude"
+        // even after `/rename <something>` updates tmux's window_name.
+        // `label` carries the renamed value and must be filter-matched.
+        let mut hooked = pane("%1", "alpha", "claude");
+        hooked.label = "my-renamed-task".into();
+        let mut other = pane("%2", "alpha", "claude");
+        other.label = "claude".into();
+
+        let mut app = App::new(snap(vec![hooked.clone(), other.clone()], vec![]));
+        for c in "renamed".chars() {
+            app.filter_push(c);
+        }
+        let panes: Vec<&PaneState> = app.rows.iter().filter_map(|r| match r {
+            Row::Pane(p) => Some(p),
+            _ => None,
+        }).collect();
+        assert_eq!(panes.len(), 1, "label filter should narrow to one pane");
+        assert_eq!(panes[0].pane_id, "%1");
+    }
+
+    #[test]
+    fn pane_filter_still_matches_by_agent_type() {
+        // `/codex` should match codex panes even when label is empty
+        // (e.g. file-only fallback when tmux is unreachable).
+        let mut a = pane("%1", "alpha", "claude");
+        a.label = String::new();
+        let mut b = pane("%2", "beta", "codex");
+        b.label = String::new();
+        let mut app = App::new(snap(vec![a, b], vec![]));
+        for c in "codex".chars() {
+            app.filter_push(c);
+        }
+        let panes: Vec<&PaneState> = app.rows.iter().filter_map(|r| match r {
+            Row::Pane(p) => Some(p),
+            _ => None,
+        }).collect();
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0].agent, "codex");
     }
 
     #[test]

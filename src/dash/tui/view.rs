@@ -254,11 +254,13 @@ fn line_for_row(row: &Row, selected: bool) -> Line<'static> {
             };
             // The "label" column shows whatever's most identifying for the
             // pane: a `/rename`'d Claude session name (which Claude writes
-            // back to tmux's window_name), the auto-renamed command, etc.
-            // It's our `agent` field — the label_from_tmux cascade already
-            // resolves to the renamed value when set. 18 cols fits common
+            // back to tmux's window_name + pane_title), the auto-renamed
+            // command, etc. `label` is refreshed from tmux on every load;
+            // fall back to `agent` when tmux is unreachable (file-only
+            // fallback) so the column is never blank. 18 cols fits common
             // session names without spilling into the prompt column.
-            let label_col = format!("{:<18}", truncate(&p.agent, 18));
+            let label_src = if p.label.is_empty() { p.agent.as_str() } else { p.label.as_str() };
+            let label_col = format!("{:<18}", truncate(label_src, 18));
             let mut spans = vec![
                 edge,
                 Span::raw("   "),
@@ -522,6 +524,7 @@ mod tests {
             last_activity: 0,
             last_prompt: String::new(),
             parked: false,
+            label: String::new(),
         }
     }
 

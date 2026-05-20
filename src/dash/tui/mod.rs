@@ -84,7 +84,8 @@ fn popup_loop<B: ratatui::backend::Backend>(
                     | Action::Refresh
                     | Action::NextReady
                     | Action::OpenWorkspace(_)
-                    | Action::CreateWorkspace { .. } => {
+                    | Action::CreateWorkspace { .. }
+                    | Action::TogglePin(_) => {
                         if let Some(after) = app.apply(action) {
                             return Ok(after);
                         }

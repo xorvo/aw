@@ -12,7 +12,7 @@ use crate::dash::state::{DormantWorkspace, PaneState, Snapshot};
 #[derive(Debug, Clone)]
 pub enum Row {
     /// `▾ <workspace>   aw-<workspace>` (or `▸ ...` collapsed).
-    Header { workspace: String, session_hint: String, collapsed: bool },
+    Header { workspace: String, session_hint: String, collapsed: bool, pinned: bool },
     /// A single pane line.
     Pane(PaneState),
     /// "─ Dormant ─" divider above the dormant block. Not selectable.
@@ -68,6 +68,8 @@ pub enum Action {
     OpenWorkspace(String),
     /// Create a brand-new workspace from a base, then open it.
     CreateWorkspace { name: String, base: String },
+    /// Toggle the pinned sentinel for a workspace.
+    TogglePin(String),
 }
 
 pub struct App {
@@ -148,10 +150,14 @@ impl App {
                 .first()
                 .map(|p| p.session.clone())
                 .unwrap_or_default();
+            // Pin is workspace-level; every pane in the group shares it,
+            // so the first one is authoritative.
+            let pinned = panes.first().map(|p| p.pinned).unwrap_or(false);
             rows.push(Row::Header {
                 workspace: workspace.clone(),
                 session_hint,
                 collapsed,
+                pinned,
             });
             if !collapsed {
                 for p in panes {
@@ -398,6 +404,26 @@ impl App {
                 }
                 None
             }
+            Action::TogglePin(workspace) => {
+                let pinned_dir = match crate::dash::pinned_dir() {
+                    Ok(p) => p,
+                    Err(_) => return None,
+                };
+                let _ = std::fs::create_dir_all(&pinned_dir);
+                // Workspace names disallow `/` (validated on create), but
+                // mirror the path-sanitization the CLI uses, just in case.
+                let safe = workspace.replace('/', "_");
+                let s = pinned_dir.join(&safe);
+                if s.exists() {
+                    let _ = std::fs::remove_file(&s);
+                } else {
+                    let _ = std::fs::write(&s, "");
+                }
+                if let Ok(snap) = Snapshot::load() {
+                    self.reload(snap);
+                }
+                None
+            }
             other => Some(other),
         }
     }
@@ -453,11 +479,18 @@ pub fn total_displayed_lines(rows: &[Row]) -> u16 {
 /// is alphabetical (input is already sorted by `Snapshot::load`).
 fn filter_dormant(dormant: &[DormantWorkspace], filter: &str) -> Vec<DormantWorkspace> {
     if filter.trim().is_empty() {
-        // Defensive sort. `compute_dormant` already sorts on load, but
-        // App::new can be constructed with arbitrary input (tests, custom
-        // tooling) — keep alphabetical ordering as a hard guarantee.
+        // Defensive sort matching `compute_dormant`: pinned first, then
+        // mtime desc, then name asc. App::new can be constructed with
+        // arbitrary input (tests, custom tooling), so we don't rely on
+        // the caller's order — and crucially we DON'T strip the
+        // pinned-first ordering that compute_dormant has already applied.
         let mut out = dormant.to_vec();
-        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out.sort_by(|a, b| {
+            b.pinned
+                .cmp(&a.pinned)
+                .then_with(|| b.mtime.cmp(&a.mtime))
+                .then_with(|| a.name.cmp(&b.name))
+        });
         return out;
     }
     let mut matcher = nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT);
@@ -545,6 +578,7 @@ mod tests {
             last_prompt: String::new(),
             parked: false,
             label: String::new(),
+            pinned: false,
         }
     }
 
@@ -553,6 +587,8 @@ mod tests {
             name: name.into(),
             base: base.into(),
             created: "2026-03-01T10:00:00Z".into(),
+            pinned: false,
+            mtime: 0,
         }
     }
 
@@ -579,6 +615,27 @@ mod tests {
             Row::Dormant(d) => assert_eq!(d.name, "zeta"),
             _ => panic!("expected dormant"),
         }
+    }
+
+    #[test]
+    fn header_carries_pinned_flag_from_panes() {
+        // A pane whose `pinned` is true should yield a Header { pinned: true }.
+        let mut pinned_pane = pane("%1", "alpha", "claude");
+        pinned_pane.pinned = true;
+        let unpinned_pane = pane("%2", "beta", "claude");
+
+        let app = App::new(snap(vec![pinned_pane, unpinned_pane], vec![]));
+
+        let alpha_header = app.rows.iter().find_map(|r| match r {
+            Row::Header { workspace, pinned, .. } if workspace == "alpha" => Some(*pinned),
+            _ => None,
+        });
+        let beta_header = app.rows.iter().find_map(|r| match r {
+            Row::Header { workspace, pinned, .. } if workspace == "beta" => Some(*pinned),
+            _ => None,
+        });
+        assert_eq!(alpha_header, Some(true), "alpha must surface as pinned");
+        assert_eq!(beta_header, Some(false), "beta must surface as unpinned");
     }
 
     #[test]

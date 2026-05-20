@@ -126,6 +126,10 @@ pub enum DashCmd {
         #[arg(long)]
         pane: Option<String>,
     },
+    /// Toggle pinned sentinel for a workspace (floats it to the top in `aw dash`)
+    Pin {
+        workspace: String,
+    },
     /// Dump full state snapshot as JSON
     Json,
     /// Prune state files for dead panes

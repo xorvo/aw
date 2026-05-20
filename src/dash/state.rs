@@ -45,6 +45,11 @@ pub struct PaneState {
     /// Not persisted — the on-disk value would be stale by next load.
     #[serde(skip)]
     pub label: String,
+    /// True iff `pinned/<workspace>` sentinel exists. Workspace-level pin
+    /// (every pane in the same workspace shares the same value). Not
+    /// persisted on the pane; we read the sentinel directory on load.
+    #[serde(skip)]
+    pub pinned: bool,
 }
 
 impl PaneState {
@@ -62,6 +67,7 @@ impl PaneState {
             last_prompt: String::new(),
             parked: false,
             label: String::new(),
+            pinned: false,
         }
     }
 
@@ -96,6 +102,15 @@ pub struct DormantWorkspace {
     pub base: String,
     /// Free-form (matches `WorkspaceMeta::created`); may be `"unknown"`.
     pub created: String,
+    /// Filled at load time from the `pinned/<name>` sentinel; not persisted.
+    #[serde(skip)]
+    pub pinned: bool,
+    /// mtime of the workspace dir (Unix epoch *milliseconds*), used to
+    /// sort unpinned dormant workspaces by recency. Filled at load time;
+    /// not persisted. Millisecond precision lets us distinguish
+    /// workspaces created in rapid succession (sandbox tests, scripts).
+    #[serde(skip)]
+    pub mtime: u128,
 }
 
 #[derive(Debug)]
@@ -128,6 +143,16 @@ impl Snapshot {
     /// this mode — there's no authority to decide they're dead.
     pub fn load() -> Result<Self> {
         let parked_dir = parked_dir().ok();
+        // Pin sentinels live at `pinned/<workspace>`. Load the set once
+        // so every row read costs O(1).
+        let pinned_workspaces: std::collections::HashSet<String> =
+            match crate::dash::pinned_dir().ok().and_then(|d| std::fs::read_dir(&d).ok()) {
+                Some(read) => read
+                    .filter_map(|d| d.ok())
+                    .map(|d| d.file_name().to_string_lossy().into_owned())
+                    .collect(),
+                None => std::collections::HashSet::new(),
+            };
         let panes_dir = panes_dir()?;
 
         // (1) Read every state file into a pane-id-keyed map. We keep a
@@ -169,6 +194,7 @@ impl Snapshot {
                         .as_ref()
                         .map(|d| d.join(&tp.pane_id).exists())
                         .unwrap_or(false);
+                    let pinned_now = pinned_workspaces.contains(&workspace);
                     // `label` is always refreshed from tmux so a
                     // `/rename`'d Claude session (which writes to
                     // window_name + pane_title) shows up in the row and
@@ -185,6 +211,7 @@ impl Snapshot {
                             s.cwd = tp.path.clone();
                             s.parked = parked_now;
                             s.label = label;
+                            s.pinned = pinned_now;
                             s
                         }
                         None => PaneState {
@@ -203,6 +230,7 @@ impl Snapshot {
                             last_prompt: String::new(),
                             parked: parked_now,
                             label,
+                            pinned: pinned_now,
                         },
                     };
                     entries.push(row);
@@ -233,7 +261,7 @@ impl Snapshot {
                     .iter()
                     .filter_map(|p| p.session.strip_prefix("aw-").map(String::from))
                     .collect();
-                dormant = compute_dormant(&active_workspaces);
+                dormant = compute_dormant(&active_workspaces, &pinned_workspaces);
             }
             crate::dash::tmux::PaneListing::Unavailable => {
                 // Fall back to file-only. Don't auto-gc — without tmux's
@@ -242,14 +270,37 @@ impl Snapshot {
                     if let Some(ref pdir) = parked_dir {
                         s.parked = pdir.join(&s.pane_id).exists();
                     }
+                    s.pinned = pinned_workspaces.contains(&s.workspace);
                     entries.push(s);
                 }
             }
         }
 
+        // Sort active entries by workspace, with workspace order driven by
+        // (pinned first, then max-activity desc among workspace's panes,
+        // then name alpha). Inside a workspace, keep stable pane_id order.
+        let max_activity: std::collections::HashMap<String, u64> = {
+            let mut m: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+            for e in &entries {
+                let cur = m.entry(e.workspace.clone()).or_insert(0);
+                if e.last_activity > *cur {
+                    *cur = e.last_activity;
+                }
+            }
+            m
+        };
         entries.sort_by(|a, b| {
-            a.workspace
-                .cmp(&b.workspace)
+            // pinned first
+            b.pinned.cmp(&a.pinned)
+                // then recency desc
+                .then_with(|| {
+                    let ma = max_activity.get(&a.workspace).copied().unwrap_or(0);
+                    let mb = max_activity.get(&b.workspace).copied().unwrap_or(0);
+                    mb.cmp(&ma)
+                })
+                // then workspace name alpha (stable when activity is tied)
+                .then_with(|| a.workspace.cmp(&b.workspace))
+                // then pane id within the workspace
                 .then_with(|| a.pane_id.cmp(&b.pane_id))
         });
         Ok(Self { entries, dormant })
@@ -276,21 +327,43 @@ impl Snapshot {
 }
 
 /// Compute the dormant-workspace list: every on-disk workspace whose name
-/// is not in the `active` set. Sorted alphabetically by name.
+/// is not in the `active` set. Sorted by (pinned desc, dir mtime desc,
+/// name asc) so pinned workspaces float to the top and recently-touched
+/// dormant ones come next.
 ///
 /// Extracted from `Snapshot::load` for direct unit testing — the loader
 /// otherwise needs a live tmux server to exercise this branch.
-pub fn compute_dormant(active: &std::collections::HashSet<String>) -> Vec<DormantWorkspace> {
+pub fn compute_dormant(
+    active: &std::collections::HashSet<String>,
+    pinned: &std::collections::HashSet<String>,
+) -> Vec<DormantWorkspace> {
+    let paths = crate::paths::Paths::from_env().ok();
     let mut out: Vec<DormantWorkspace> = crate::workspace::listing::enumerate_workspaces()
         .into_iter()
         .filter(|m| !active.contains(&m.name))
-        .map(|m| DormantWorkspace {
-            name: m.name,
-            base: m.base,
-            created: m.created,
+        .map(|m| {
+            let mtime = paths
+                .as_ref()
+                .and_then(|p| std::fs::metadata(p.workspace_dir(&m.name)).ok())
+                .and_then(|md| md.modified().ok())
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            DormantWorkspace {
+                pinned: pinned.contains(&m.name),
+                name: m.name,
+                base: m.base,
+                created: m.created,
+                mtime,
+            }
         })
         .collect();
-    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.sort_by(|a, b| {
+        b.pinned
+            .cmp(&a.pinned)
+            .then_with(|| b.mtime.cmp(&a.mtime))
+            .then_with(|| a.name.cmp(&b.name))
+    });
     out
 }
 
@@ -319,6 +392,9 @@ mod tests {
         std::fs::write(dir.join("name"), format!("{}\n", name)).unwrap();
         std::fs::write(dir.join("base"), format!("{}\n", base)).unwrap();
         std::fs::write(dir.join("created"), format!("{}\n", created)).unwrap();
+        // Small sleep so successive calls produce distinguishable mtimes on
+        // the workspace dir — recency-sort tests rely on this.
+        std::thread::sleep(std::time::Duration::from_millis(15));
     }
 
     #[test]
@@ -333,13 +409,15 @@ mod tests {
         let mut active: HashSet<String> = HashSet::new();
         active.insert("beta".into());
 
-        let out = compute_dormant(&active);
+        let out = compute_dormant(&active, &std::collections::HashSet::new());
         std::env::remove_var("AW_WORKSPACES_DIR");
 
+        // gamma was seeded last (highest dir mtime) so it floats to the
+        // top under the recency sort. alpha follows.
         let names: Vec<&str> = out.iter().map(|d| d.name.as_str()).collect();
-        assert_eq!(names, vec!["alpha", "gamma"]);
-        assert_eq!(out[0].base, "default");
-        assert_eq!(out[1].created, "2026-03-03T10:00:00Z");
+        assert_eq!(names, vec!["gamma", "alpha"]);
+        assert_eq!(out[0].created, "2026-03-03T10:00:00Z");
+        assert_eq!(out[1].base, "default");
     }
 
     #[test]
@@ -351,11 +429,13 @@ mod tests {
         std::env::set_var("AW_WORKSPACES_DIR", tmp.path());
 
         let active: HashSet<String> = HashSet::new();
-        let out = compute_dormant(&active);
+        let out = compute_dormant(&active, &std::collections::HashSet::new());
         std::env::remove_var("AW_WORKSPACES_DIR");
 
+        // two was seeded after one, so it floats to the top under the
+        // recency sort.
         let names: Vec<&str> = out.iter().map(|d| d.name.as_str()).collect();
-        assert_eq!(names, vec!["one", "two"]);
+        assert_eq!(names, vec!["two", "one"]);
     }
 
     #[test]
@@ -368,8 +448,33 @@ mod tests {
         let mut active: HashSet<String> = HashSet::new();
         active.insert("only".into());
 
-        let out = compute_dormant(&active);
+        let out = compute_dormant(&active, &std::collections::HashSet::new());
         std::env::remove_var("AW_WORKSPACES_DIR");
         assert!(out.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn compute_dormant_pinned_floats_to_top() {
+        let tmp = TempDir::new().unwrap();
+        seed(tmp.path(), "alpha", "default", "2026-03-01T10:00:00Z");
+        seed(tmp.path(), "beta", "default", "2026-03-02T10:00:00Z");
+        seed(tmp.path(), "zeta", "default", "2026-03-03T10:00:00Z");
+        std::env::set_var("AW_WORKSPACES_DIR", tmp.path());
+
+        let active: HashSet<String> = HashSet::new();
+        let mut pinned: HashSet<String> = HashSet::new();
+        pinned.insert("zeta".into()); // last alphabetically
+
+        let out = compute_dormant(&active, &pinned);
+        std::env::remove_var("AW_WORKSPACES_DIR");
+
+        let names: Vec<&str> = out.iter().map(|d| d.name.as_str()).collect();
+        // zeta is pinned → first, regardless of name or mtime.
+        assert_eq!(names[0], "zeta", "pinned workspace must come first");
+        assert!(out[0].pinned);
+        // Unpinned entries follow in mtime-desc order. seed() creates them
+        // sequentially, so beta (seeded after alpha) comes first.
+        assert_eq!(names[1..], vec!["beta", "alpha"]);
     }
 }

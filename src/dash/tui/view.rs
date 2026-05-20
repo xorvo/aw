@@ -280,21 +280,29 @@ fn line_for_row(row: &Row, selected: bool) -> Line<'static> {
         Span::raw(" ")
     };
     match row {
-        Row::Header { workspace, session_hint, collapsed } => {
+        Row::Header { workspace, session_hint, collapsed, pinned } => {
             let arrow = if *collapsed { "▸" } else { "▾" };
-            Line::from(vec![
+            let mut spans = vec![
                 edge,
                 Span::raw(" "),
                 Span::styled(
                     format!("{} {}", arrow, workspace),
                     Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                 ),
-                Span::raw("   "),
-                Span::styled(
-                    session_hint.clone(),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ])
+            ];
+            if *pinned {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    crate::dash::render::pinned_glyph().to_string(),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+            spans.push(Span::raw("   "));
+            spans.push(Span::styled(
+                session_hint.clone(),
+                Style::default().fg(Color::DarkGray),
+            ));
+            Line::from(spans)
         }
         Row::DormantDivider => Line::from(vec![
             edge,
@@ -328,6 +336,13 @@ fn line_for_row(row: &Row, selected: bool) -> Line<'static> {
                     Style::default().fg(Color::DarkGray),
                 ),
             ];
+            if d.pinned {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    crate::dash::render::pinned_glyph().to_string(),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
             // Selected row highlight matches Pane styling so the cursor
             // reads consistently as you scroll between sections.
             let mut line = Line::from(std::mem::take(&mut spans));
@@ -539,6 +554,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                 ("/", "filter"),
                 ("c", "new"),
                 ("p", "park"),
+                ("P", "pin"),
                 ("n", "next-ready"),
                 ("r", "refresh"),
                 ("H", "dormant"),
@@ -650,6 +666,7 @@ mod tests {
             last_prompt: String::new(),
             parked: false,
             label: String::new(),
+            pinned: false,
         }
     }
 
@@ -658,6 +675,8 @@ mod tests {
             name: name.into(),
             base: base.into(),
             created: "2026-03-01T10:00:00Z".into(),
+            pinned: false,
+            mtime: 0,
         }
     }
 

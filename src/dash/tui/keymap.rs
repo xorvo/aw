@@ -2,7 +2,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::dash::tui::app::{Action, App, CreateField, Mode};
+use crate::dash::tui::app::{Action, App, CreateField, Mode, Row};
 
 pub fn on_key(app: &mut App, key: KeyEvent) -> Action {
     match app.mode {
@@ -74,6 +74,10 @@ fn normal_mode(app: &mut App, key: KeyEvent) -> Action {
             app.toggle_dormant();
             Action::Continue
         }
+        (KeyCode::Char('P'), _) => match workspace_under_cursor(app) {
+            Some(ws) => Action::TogglePin(ws),
+            None => Action::Continue,
+        },
         (KeyCode::Tab, _) => {
             app.toggle_preview();
             Action::Continue
@@ -91,6 +95,18 @@ fn normal_mode(app: &mut App, key: KeyEvent) -> Action {
             Action::Continue
         }
         _ => Action::Continue,
+    }
+}
+
+/// Resolve the workspace name addressed by the row under the cursor.
+/// Headers and dormant rows are workspace-level; pane rows derive from
+/// their `workspace` field. The dormant divider returns None.
+fn workspace_under_cursor(app: &App) -> Option<String> {
+    match app.rows.get(app.selected) {
+        Some(Row::Pane(p)) => Some(p.workspace.clone()),
+        Some(Row::Header { workspace, .. }) => Some(workspace.clone()),
+        Some(Row::Dormant(d)) => Some(d.name.clone()),
+        _ => None,
     }
 }
 
@@ -187,6 +203,7 @@ mod tests {
             last_prompt: String::new(),
             parked: false,
             label: String::new(),
+            pinned: false,
         }
     }
 
@@ -195,6 +212,8 @@ mod tests {
             name: name.into(),
             base: "default".into(),
             created: "2026-03-01T10:00:00Z".into(),
+            pinned: false,
+            mtime: 0,
         }
     }
 
@@ -410,6 +429,47 @@ mod tests {
         // The form is populated (bases may be empty in a test sandbox,
         // but the form itself must exist for the renderer to see it).
         assert!(app.create.is_some());
+    }
+
+    // ---- P (pin) ----
+
+    #[test]
+    fn capital_p_on_pane_returns_toggle_pin_for_workspace() {
+        let mut app = App::new(Snapshot {
+            entries: vec![pane("%1", "alpha")],
+            dormant: vec![],
+        });
+        let action = on_key(&mut app, key(KeyCode::Char('P')));
+        match action {
+            Action::TogglePin(ws) => assert_eq!(ws, "alpha"),
+            other => panic!("expected TogglePin(alpha), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn capital_p_on_dormant_returns_toggle_pin_for_workspace() {
+        let mut app = App::new(Snapshot {
+            entries: vec![],
+            dormant: vec![dormant("backlog")],
+        });
+        let action = on_key(&mut app, key(KeyCode::Char('P')));
+        match action {
+            Action::TogglePin(ws) => assert_eq!(ws, "backlog"),
+            other => panic!("expected TogglePin(backlog), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lowercase_p_still_parks_does_not_pin() {
+        let mut app = App::new(Snapshot {
+            entries: vec![pane("%5", "alpha")],
+            dormant: vec![],
+        });
+        let action = on_key(&mut app, key(KeyCode::Char('p')));
+        match action {
+            Action::Park(p) => assert_eq!(p, "%5"),
+            other => panic!("expected Park, got {:?}", other),
+        }
     }
 
     #[test]

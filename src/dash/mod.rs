@@ -25,6 +25,12 @@ pub fn parked_dir() -> Result<PathBuf> {
     Ok(state_root()?.join("parked"))
 }
 
+/// `~/.cache/aw/pinned/` — sentinel files for pinned workspaces.
+/// Each file is named after the workspace; presence means pinned.
+pub fn pinned_dir() -> Result<PathBuf> {
+    Ok(state_root()?.join("pinned"))
+}
+
 fn state_root() -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("AW_STATE_DIR") {
         return Ok(PathBuf::from(p));
@@ -69,6 +75,24 @@ pub fn cmd_park(pane_override: Option<&str>) -> Result<()> {
     } else {
         std::fs::write(&sentinel, "")?;
         println!("{}  Parked {}", glyph, pane);
+    }
+    Ok(())
+}
+
+/// `aw dash pin <workspace>` — toggle the pinned sentinel for a workspace.
+/// Pinned workspaces float to the top of the dash, both in their active and
+/// dormant groups.
+pub fn cmd_pin(workspace: &str) -> Result<()> {
+    let dir = pinned_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    let sentinel = dir.join(sanitize_workspace(workspace));
+    let glyph = crate::dash::render::pinned_glyph();
+    if sentinel.exists() {
+        std::fs::remove_file(&sentinel)?;
+        println!("{}  Unpinned {}", glyph, workspace);
+    } else {
+        std::fs::write(&sentinel, "")?;
+        println!("{}  Pinned {}", glyph, workspace);
     }
     Ok(())
 }
@@ -148,4 +172,10 @@ pub fn cmd_status_line() -> Result<()> {
 /// already — but defensively replace `/` if anyone hands us one.
 fn sanitize_pane(p: &str) -> String {
     p.replace('/', "_")
+}
+
+/// Workspace names go through `aw create` which already forbids `/`, but
+/// belt-and-suspenders for paths that flow through here.
+fn sanitize_workspace(w: &str) -> String {
+    w.replace('/', "_")
 }

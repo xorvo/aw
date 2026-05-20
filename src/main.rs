@@ -33,6 +33,7 @@ fn main() -> Result<()> {
             Some(DashCmd::StatusLine) => dash::cmd_status_line(),
             Some(DashCmd::NextReady) => dash::cmd_next_ready(),
             Some(DashCmd::Park { pane }) => dash::cmd_park(pane.as_deref()),
+            Some(DashCmd::Pin { workspace }) => dash::cmd_pin(&workspace),
             Some(DashCmd::Json) => dash::cmd_json(),
             Some(DashCmd::Gc) => dash::cmd_gc(),
         },

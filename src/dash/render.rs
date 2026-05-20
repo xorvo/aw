@@ -66,6 +66,16 @@ pub fn dormant_glyph() -> &'static str {
     }
 }
 
+/// Glyph for pinned workspaces.
+///
+///   pinned:  nf-fa-star  (\u{F005})
+pub fn pinned_glyph() -> &'static str {
+    match icon_set() {
+        IconSet::NerdFont => "\u{F005}",
+        IconSet::Ascii => "*",
+    }
+}
+
 /// "5s", "1m", "14m", "2h", "3d" — short relative time for the row line.
 pub fn humanize_age(epoch: u64) -> String {
     let now = SystemTime::now()

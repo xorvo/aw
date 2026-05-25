@@ -49,6 +49,12 @@ pub enum Cmd {
     },
     /// Sync all repos in current workspace with remote
     Sync,
+    /// Reset all repos in current workspace to the remote default branch
+    Reset {
+        /// Force reset, discarding uncommitted changes and divergent commits
+        #[arg(long)]
+        hard: bool,
+    },
     /// Open tool home directory in editor
     OpenHome,
 

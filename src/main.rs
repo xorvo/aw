@@ -25,6 +25,7 @@ fn main() -> Result<()> {
         Cmd::EditConfig => workspace::edit::edit_config(),
         Cmd::EditBase { base } => workspace::edit::edit_base(&base),
         Cmd::Sync => workspace::sync::run(),
+        Cmd::Reset { hard } => workspace::reset::run(hard),
         Cmd::OpenHome => workspace::edit::open_home(),
 
         Cmd::Dash { command, filter } => match command {

@@ -9,5 +9,6 @@ pub mod init;
 pub mod list;
 pub mod listing;
 pub mod meta;
+pub mod reset;
 pub mod start;
 pub mod sync;

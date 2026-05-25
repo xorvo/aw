@@ -16,6 +16,7 @@ Commands:
   edit-config  Open config file in default editor
   edit-base    Open base workspace directory in editor
   sync         Sync all repos in current workspace with remote
+  reset        Reset all repos in current workspace to the remote default branch
   open-home    Open tool home directory in editor
   dash         Tmux-based dashboard for live agent state
   hook         Write an agent state transition (called by Claude/Codex/pi hooks)

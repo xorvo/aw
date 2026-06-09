@@ -173,14 +173,22 @@ fn reset_repo(dir: &Path, hard: bool) -> ResetResult {
         }
     }
 
-    // Switch worktree to the default branch. If the local branch doesn't
-    // exist yet, create it tracking the remote ref.
-    if git(dir, &["checkout", "-q", &default_branch]).is_err()
-        && git(dir, &["checkout", "-q", "-B", &default_branch, &remote_ref]).is_err()
-    {
+    // Switch worktree to the default branch and point it at the remote tip.
+    // `-B` covers both "branch exists" and "branch missing" in one call; under
+    // `--hard` we also add `-f` so a tracked-file conflict between the current
+    // branch and the default branch doesn't block the switch. (Without --hard
+    // the worktree is already verified clean above, so -f isn't needed.)
+    let mut args: Vec<&str> = vec!["checkout", "-q"];
+    if hard {
+        args.push("-f");
+    }
+    args.extend(["-B", &default_branch, &remote_ref]);
+    if git(dir, &args).is_err() {
         return ResetResult::FailedCheckout(default_branch);
     }
 
+    // `checkout -B <branch> <ref>` already aligns HEAD + worktree with <ref>,
+    // but redo the hard reset as defense in depth (cheap; idempotent).
     if git(dir, &["reset", "--hard", "--quiet", &remote_ref]).is_err() {
         return ResetResult::FailedReset(default_branch);
     }

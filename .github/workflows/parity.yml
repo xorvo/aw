@@ -12,10 +12,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install yq, jq, tmux
+      - name: Install yq, jq, tmux, zsh
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends jq tmux
+          sudo apt-get install -y --no-install-recommends jq tmux zsh
           # apt's `yq` is a different tool (yaml->json wrapper around python).
           # The bash CLI uses mikefarah/yq syntax (`.foo[]`), so install that one.
           sudo curl -fsSL -o /usr/local/bin/yq \
@@ -54,10 +54,10 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - name: Install yq, jq, tmux
+      - name: Install yq, jq, tmux, zsh
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends jq tmux
+          sudo apt-get install -y --no-install-recommends jq tmux zsh
           sudo curl -fsSL -o /usr/local/bin/yq \
             https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq

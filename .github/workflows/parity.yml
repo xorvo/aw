@@ -10,7 +10,7 @@ jobs:
     name: parity (bash baseline + rust port)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install yq, jq, tmux, zsh
         run: |
@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install yq, jq, tmux, zsh
         run: |
           sudo apt-get update -qq

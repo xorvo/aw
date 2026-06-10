@@ -24,7 +24,7 @@ jobs:
           - aarch64-apple-darwin
           - x86_64-apple-darwin
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -58,7 +58,7 @@ jobs:
           echo "asset_name=${NAME}" >> "$GITHUB_OUTPUT"
 
       - name: upload to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/${{ steps.package.outputs.asset_name }}.tar.gz
@@ -78,12 +78,12 @@ jobs:
     if: ${{ !contains(github.ref_name, '-') }}
     steps:
       - name: Checkout aw (template lives here)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: aw
 
       - name: Checkout homebrew-tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: xorvo/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}

@@ -170,6 +170,11 @@ fn render_plist(bin: &str, host: Option<&str>, port: Option<u16>, log: &str, pat
   <dict>
     <key>PATH</key>
     <string>{path}</string>
+    <!-- launchd provides no locale; without a UTF-8 one, tmux strips the
+         tab separators from its -F output and the session list parses
+         empty. aw forces this per-tmux-call too, but set it here as well. -->
+    <key>LC_ALL</key>
+    <string>en_US.UTF-8</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>

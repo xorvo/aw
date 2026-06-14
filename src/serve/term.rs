@@ -8,13 +8,13 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Mutex;
 
 use anyhow::{bail, Context, Result};
 
 fn tmux(args: &[&str]) -> Result<String> {
-    let out = Command::new("tmux")
+    let out = crate::dash::tmux::tmux_command()
         .args(args)
         .output()
         .context("spawning tmux")?;
@@ -26,7 +26,7 @@ fn tmux(args: &[&str]) -> Result<String> {
 
 /// Run tmux with `input` piped to stdin (for `load-buffer -`).
 fn tmux_stdin(args: &[&str], input: &str) -> Result<()> {
-    let mut child = Command::new("tmux")
+    let mut child = crate::dash::tmux::tmux_command()
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())

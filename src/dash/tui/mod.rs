@@ -149,7 +149,7 @@ pub fn run_sidebar() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("could not resolve current tmux session"))?;
 
     if let Some(existing) = find_existing_sidebar(&session) {
-        let _ = std::process::Command::new("tmux")
+        let _ = crate::dash::tmux::tmux_command()
             .args(["select-pane", "-t", &existing])
             .status();
         return Ok(());
@@ -157,7 +157,7 @@ pub fn run_sidebar() -> Result<()> {
 
     let aw_self = std::env::current_exe()?;
     let cmd = format!("{} _sidebar-loop", aw_self.display());
-    let out = std::process::Command::new("tmux")
+    let out = crate::dash::tmux::tmux_command()
         .args([
             "split-window",
             "-h",
@@ -176,7 +176,7 @@ pub fn run_sidebar() -> Result<()> {
     }
     let new_pane = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if !new_pane.is_empty() {
-        let _ = std::process::Command::new("tmux")
+        let _ = crate::dash::tmux::tmux_command()
             .args(["set-option", "-p", "-t", &new_pane, "@aw-sidebar", "1"])
             .status();
     }
@@ -185,7 +185,7 @@ pub fn run_sidebar() -> Result<()> {
 
 /// Returns the pane id of an existing sidebar in `session`, or None.
 fn find_existing_sidebar(session: &str) -> Option<String> {
-    let out = std::process::Command::new("tmux")
+    let out = crate::dash::tmux::tmux_command()
         .args([
             "list-panes",
             "-s",                        // all windows in the session
@@ -207,7 +207,7 @@ fn find_existing_sidebar(session: &str) -> Option<String> {
 }
 
 fn tmux_capture(args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new("tmux")
+    let out = crate::dash::tmux::tmux_command()
         .args(args)
         .stderr(std::process::Stdio::null())
         .output()

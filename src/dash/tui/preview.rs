@@ -1,10 +1,8 @@
 //! Pane preview via `tmux capture-pane -p -t <pane>`.
 
-use std::process::Command;
-
 /// Last `lines` lines of the pane's visible buffer. Empty if tmux/pane is gone.
 pub fn capture(pane_id: &str, lines: u16) -> String {
-    let out = Command::new("tmux")
+    let out = crate::dash::tmux::tmux_command()
         .args([
             "capture-pane",
             "-p",

@@ -6,7 +6,7 @@
 //!   with the agent list on the left and a detail/preview pane on the
 //!   right. Keymap: j/k navigate, Enter jumps via `tmux switch-client`,
 //!   `/` filters, `p` parks, `n` next-ready, `r` refresh, Tab toggles
-//!   preview, q quits.
+//!   preview, `Q` shows the phone-pairing QR overlay, q quits.
 //! - **Sidebar** (`aw dash sidebar` / `_sidebar-loop`): same renderer in a
 //!   narrow single-column layout, redrawn on a 2 s timer. No interactive
 //!   keys — kill the pane to dismiss.

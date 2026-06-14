@@ -1,5 +1,6 @@
 ---
 source: tests/parity_help.rs
+assertion_line: 42
 expression: stdout
 ---
 Manage isolated workspaces for AI agents
@@ -19,6 +20,7 @@ Commands:
   reset        Reset all repos in current workspace to the remote default branch
   open-home    Open tool home directory in editor
   dash         Tmux-based dashboard for live agent state
+  serve        Serve the phone remote-control web app over the LAN
   hook         Write an agent state transition (called by Claude/Codex/pi hooks)
   shell-init   Print shell hook for eval (e.g. `eval "$(aw shell-init zsh)"`)
   completions  Print shell completions

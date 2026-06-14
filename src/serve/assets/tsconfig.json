@@ -1,0 +1,14 @@
+{
+  // Compiles app.ts -> app.js (a classic global script — no modules — since
+  // index.html loads it with a plain <script src>). app.js is committed so
+  // `cargo build` never needs a Node toolchain; rebuild with
+  // scripts/build-frontend.sh after editing app.ts.
+  "compilerOptions": {
+    "target": "es2020",
+    "lib": ["dom", "dom.iterable", "es2020"],
+    "noImplicitAny": true,
+    "noEmitOnError": true,
+    "removeComments": false
+  },
+  "files": ["app.ts"]
+}

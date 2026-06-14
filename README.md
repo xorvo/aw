@@ -80,6 +80,14 @@ The default tmux bindings (after `aw install tmux-bindings`) are
 keymap, hook contract, and state schema in
 [`docs/dash.md`](docs/dash.md).
 
+## The phone remote
+
+`aw serve` puts the same live view on your phone (same Wi-Fi): see who's
+working / waiting, read any agent's terminal in color, type back, approve
+permission prompts, even paste a screenshot. It prints a QR code to pair —
+or press `Q` inside `aw dash` anytime. Details in
+[`docs/serve.md`](docs/serve.md).
+
 ## Configure
 
 `~/.agent-workspaces/config.yaml` (or `aw edit-config`):

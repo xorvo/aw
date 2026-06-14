@@ -107,6 +107,9 @@ pub fn update(no_confirm: bool) -> Result<()> {
                 .status();
         }
         println!("✅ upgraded to v{}", status.version());
+        // If the login service is installed, bounce it onto the new
+        // binary. Best-effort: prints its own note, never fails the update.
+        crate::install::service::refresh_after_upgrade();
     } else {
         println!("✅ already on the latest version (v{})", status.version());
     }

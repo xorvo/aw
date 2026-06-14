@@ -68,6 +68,16 @@ pub enum Cmd {
         command: Option<DashCmd>,
     },
 
+    /// Serve the phone remote-control web app over the LAN
+    Serve {
+        /// Listen host (default: $AW_REMOTE_HOST or 0.0.0.0)
+        #[arg(long)]
+        host: Option<String>,
+        /// Listen port (default: $AW_REMOTE_PORT or 7340)
+        #[arg(long)]
+        port: Option<u16>,
+    },
+
     /// Write an agent state transition (called by Claude/Codex/pi hooks)
     Hook {
         #[arg(long)]
@@ -173,7 +183,20 @@ pub enum InstallCmd {
         #[arg(long)]
         config: Option<std::path::PathBuf>,
     },
-    /// Run shell + hooks + tmux-bindings interactively
+    /// Install a launchd LaunchAgent so `aw serve` (phone remote) runs at
+    /// login and is kept alive (macOS). Re-run to update it.
+    Service {
+        /// Remove the service instead of installing it
+        #[arg(long)]
+        uninstall: bool,
+        /// Bind host for the daemon (default: 0.0.0.0)
+        #[arg(long)]
+        host: Option<String>,
+        /// Listen port for the daemon (default: 7340)
+        #[arg(long)]
+        port: Option<u16>,
+    },
+    /// Run shell + hooks + tmux-bindings + serve-at-login interactively
     All,
 }
 

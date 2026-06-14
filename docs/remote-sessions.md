@@ -4,9 +4,10 @@ Watch and steer every `aw` agent session from a phone on the same network:
 see which agents are working / waiting / idle, get pinged when one needs you,
 read its terminal, and type back or approve permission prompts.
 
-LAN-first, with a clear path to WAN later. A **working prototype lives in
-[`prototype/remote/`](../prototype/remote/)** — run it today; this doc is the
-plan for folding it into `aw` proper.
+LAN-first, with a clear path to WAN later. **This is shipped as
+[`aw serve`](serve.md)** (`src/serve/` — Rust daemon, TypeScript PWA client);
+this doc is the design record and the roadmap for what's next. It began as a
+standalone Node prototype (`prototype/remote/`, retired once the port landed).
 
 ---
 
@@ -83,7 +84,7 @@ power-user escape hatch.
 
 ---
 
-## 3. API (the contract the prototype already implements)
+## 3. API (the contract `aw serve` implements)
 
 | Method | Path                  | Body / query                          | Action                                                       |
 | ------ | --------------------- | ------------------------------------- | ------------------------------------------------------------ |
@@ -99,9 +100,9 @@ power-user escape hatch.
 | POST   | `/api/workspaces`†    | `{name, base}`                        | `aw create` (phase 1)                                       |
 | DELETE | `/api/workspaces/:n`† | —                                     | `aw delete` (phase 1)                                       |
 
-† workspace lifecycle not in the prototype yet. Everything above it is implemented and tested.
+† workspace lifecycle not implemented yet. Everything above it is implemented and tested.
 
-**Beyond the table, the prototype also includes:** an ANSI→HTML renderer
+**Beyond the table, the client also includes:** an ANSI→HTML renderer
 (16/256/truecolor, strips non-SGR/OSC sequences); live tap-to-type into the
 pane and a full-screen **draft editor** with per-session `localStorage` drafts
 (IME-friendly, sends via bracketed paste); **fit-to-screen** that resizes the
@@ -125,7 +126,7 @@ free-text box that types and submits — so "approve this edit" is a single tap.
 Threat model: anything that can reach the port can drive your agents — read
 code, run tools, type commands. So even on LAN this is gated.
 
-**Phase 1 — LAN (implemented in the prototype):**
+**Phase 1 — LAN (implemented):**
 - **Bearer token**, 128-bit, generated once and cached at
   `~/.cache/aw/remote-token` (mode 0600). Required on every request (header,
   `?t=` bootstrap, or cookie). No token → `401`.
@@ -157,7 +158,7 @@ code, run tools, type commands. So even on LAN this is gated.
    push: a tiny cloud relay holds the WebSocket and forwards APNs. Most work;
    defer until the native app exists.
 
-Never just port-forward 8787 to the internet.
+Never just port-forward the daemon's port (default 7340) to the internet.
 
 ---
 
@@ -190,26 +191,25 @@ widgets — revisit after the PWA proves the workflow.
 | Phase | Deliverable                                                            | Status |
 | ----- | --------------------------------------------------------------------- | ------ |
 | **0** | Node prototype daemon + PWA: live SSE state & screen, ANSI color, tap-to-type, draft editor, fit-to-screen, screenshot upload, Nerd-Font UI, token auth, LAN | ✅ done — `prototype/remote/` |
+| **0.5** | QR pairing in the dashboard: `Q` in `aw dash` shows the pairing URL as a terminal QR code (shared token via `~/.cache/aw/remote-token`) | ✅ done — `src/dash/remote_link.rs` |
 | **1** | Foreground/installed-PWA "waiting" notifications; workspace create/delete | next |
-| **1.5** | Port the daemon into `aw` as `aw serve` (reuse `state.rs`/`tmux.rs`); TLS + QR pairing | |
+| **1.5** | Port the daemon into `aw` as `aw serve` (Rust daemon, TS client, embedded assets) | ✅ done — `src/serve/` |
+| **1.6** | TLS (self-signed / mkcert) so the token never crosses the LAN in clear | |
 | **2** | Web Push (VAPID) or ntfy background alerts; Tailscale for WAN          | |
 | **3** | Optional native iOS app (APNs, Live Activities, widgets)              | later |
 
-### Folding into `aw` (phase 1.5)
+### Folding into `aw` (phase 1.5 — done)
 
-The prototype is intentionally a standalone Node file so it runs *now*. The
-native home is a Rust subcommand:
+`aw serve` lives at `src/serve/` (threaded `tiny_http`, no async runtime —
+matching the repo's lean ethos). It reuses `dash::state` for snapshots and
+`dash::remote_link` for the shared pairing token; tmux control (capture /
+send-keys / fit) lives in `serve::term`. The PWA client is TypeScript at
+`src/serve/assets/app.ts`; its compiled `app.js` plus `index.html` are
+embedded with `include_str!` → single binary, no Node at build or run time
+(`scripts/build-frontend.sh` regenerates `app.js` after editing the TS).
 
-- `aw serve [--port 8787] [--bind lan|tailscale0]` in `src/` alongside `dash/`.
-- Reuse `dash::state` (state snapshot), `dash::tmux` (add `capture_pane` /
-  `send_keys` helpers — only `switch_to_pane`, `current_pane`, listing exist
-  today), and `workspace::{create,delete,list}`.
-- Crate additions: a small async HTTP stack (`axum` + `tokio`) or hand-rolled
-  on `std::net` to stay dependency-light, matching the repo's lean ethos.
-- Serve the same PWA HTML as a `include_str!` asset → single binary, no Node.
-
-The HTTP contract above is the seam: the PWA doesn't change when the backend
-moves from Node to Rust.
+The HTTP contract above was the seam: the client didn't change when the
+backend moved from Node to Rust.
 
 ---
 
@@ -217,7 +217,7 @@ moves from Node to Rust.
 
 - Multi-host: control agents across several Macs from one phone view? (daemon
   per host + a client-side host switcher, or one aggregating daemon.)
-- Scrollback depth & ANSI color in the terminal view (prototype strips color
+- Scrollback depth & ANSI color in the terminal view (the client strips color
   for legibility; `capture-pane -e` preserves it).
 - Rate-limiting `/api/keys` and an explicit "dangerous action" confirm for
   `^C` / destructive replies.

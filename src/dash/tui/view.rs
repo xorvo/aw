@@ -83,6 +83,14 @@ fn render_body(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    // Same full-body treatment for the phone-pairing overlay: the QR
+    // needs the vertical space, and hiding the list prevents confusion
+    // about what j/k would act on while it's up.
+    if app.mode == Mode::Qr {
+        render_qr(f, area, app);
+        return;
+    }
+
     let chunks = if app.show_preview {
         Layout::default()
             .direction(Direction::Horizontal)
@@ -187,12 +195,74 @@ fn render_create(f: &mut Frame, area: Rect, app: &App) {
     if let Some(err) = form.error.as_deref() {
         lines.push(Line::raw(""));
         lines.push(Line::from(vec![Span::styled(
-            format!("❌ {}", err),
+            format!("error: {}", err),
             Style::default().fg(Color::Red),
         )]));
     }
 
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+fn render_qr(f: &mut Frame, area: Rect, app: &App) {
+    let overlay = match app.qr.as_ref() {
+        Some(o) => o,
+        None => return,
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .padding(Padding::horizontal(2))
+        .title(Span::styled(
+            " Connect a phone ",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let label_style = Style::default().fg(Color::DarkGray);
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::raw(""));
+
+    if let Some(err) = overlay.error.as_deref() {
+        lines.push(Line::from(vec![Span::styled(
+            format!("error: {}", err),
+            Style::default().fg(Color::Red),
+        )]));
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        return;
+    }
+
+    let url = overlay.url.as_deref().unwrap_or("—");
+    lines.push(Line::from(vec![
+        Span::styled("URL:  ", label_style),
+        Span::styled(
+            url.to_string(),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::raw(""));
+    // The QR itself. No Wrap on this Paragraph — a wrapped QR line would
+    // scramble the code; on a too-narrow popup it clips instead, and the
+    // plain URL above stays usable.
+    for l in &overlay.lines {
+        lines.push(Line::from(Span::styled(
+            l.clone(),
+            Style::default().fg(Color::White),
+        )));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![Span::styled(
+        "Scan with the phone camera (same Wi-Fi), or type the URL by hand.",
+        label_style,
+    )]));
+    lines.push(Line::from(vec![Span::styled(
+        "Requires the remote daemon: aw serve",
+        label_style,
+    )]));
+
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_list(f: &mut Frame, area: Rect, app: &App) {
@@ -535,6 +605,10 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
             }
             Line::from(spans)
         }
+        Mode::Qr => Line::from(vec![
+            Span::styled("esc", Style::default().fg(Color::Cyan)),
+            Span::styled(" close", Style::default().fg(Color::DarkGray)),
+        ]),
         Mode::Normal => {
             let key_style = Style::default().fg(Color::Cyan);
             let act_style = Style::default().fg(Color::DarkGray);
@@ -557,6 +631,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                 ("P", "pin"),
                 ("n", "next-ready"),
                 ("r", "refresh"),
+                ("Q", "phone"),
                 ("H", "dormant"),
                 ("␣", "(un)collapse"),
                 ("q", "quit"),
@@ -850,6 +925,54 @@ mod tests {
 
         let out = render_to_string(&app, 100, 24);
         assert!(out.contains("no bases configured"), "init hint missing:\n{}", out);
+    }
+
+    #[test]
+    fn qr_overlay_renders_url_and_code() {
+        use crate::dash::tui::app::QrOverlay;
+        let url = "http://192.168.1.10:8787/?t=abc123";
+        let mut app = App::new(Snapshot { entries: vec![], dormant: vec![] });
+        app.qr = Some(QrOverlay {
+            url: Some(url.into()),
+            lines: crate::dash::remote_link::qr_lines(url).unwrap(),
+            error: None,
+        });
+        app.mode = crate::dash::tui::app::Mode::Qr;
+
+        let out = render_to_string(&app, 100, 30);
+        assert!(out.contains("Connect a phone"), "overlay title missing:\n{}", out);
+        assert!(out.contains(url), "plain URL missing:\n{}", out);
+        assert!(out.contains("████"), "QR blocks missing:\n{}", out);
+        assert!(out.contains("Scan with the phone camera"), "hint missing:\n{}", out);
+        assert!(out.contains("esc close"), "qr-mode footer missing:\n{}", out);
+        // The overlay replaces the list/detail panes entirely.
+        assert!(!out.contains(" Agents "), "list should be hidden:\n{}", out);
+    }
+
+    #[test]
+    fn qr_overlay_renders_error_when_resolution_failed() {
+        use crate::dash::tui::app::QrOverlay;
+        let mut app = App::new(Snapshot { entries: vec![], dormant: vec![] });
+        app.qr = Some(QrOverlay {
+            url: None,
+            lines: vec![],
+            error: Some("no home dir".into()),
+        });
+        app.mode = crate::dash::tui::app::Mode::Qr;
+
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("no home dir"), "error text missing:\n{}", out);
+        assert!(!out.contains("URL:"), "no URL line when resolution failed:\n{}", out);
+    }
+
+    #[test]
+    fn normal_footer_advertises_qr_hotkey() {
+        let app = App::new(Snapshot {
+            entries: vec![pane("%1", "alpha", "claude")],
+            dormant: vec![],
+        });
+        let out = render_to_string(&app, 130, 24);
+        assert!(out.contains("Q phone"), "footer hint missing 'Q phone':\n{}", out);
     }
 
     #[test]

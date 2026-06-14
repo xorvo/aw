@@ -27,6 +27,17 @@ walkdir = "2"
 shellexpand = "3"
 dirs = "5"
 tempfile = "3"
+# Terminal QR rendering for the phone-pairing overlay in `aw dash`.
+# Project Nayuki's generator — zero transitive dependencies.
+qrcodegen = "1.8"
+# Interface enumeration for picking the right LAN IP in pairing URLs —
+# the UDP-connect route-lookup trick picks the VPN tunnel when one is up.
+if-addrs = "0.13"
+# `aw serve` — the phone remote-control daemon. tiny_http is a small
+# threaded HTTP/1.1 server (no tokio); flate2 (already in the tree via
+# self_update) compresses the generated PNG app icons.
+tiny_http = "0.12"
+flate2 = "1"
 # `self_update` pulls update artifacts from GitHub Releases. We disable the
 # default features (which include reqwest/native-tls and pull in OpenSSL)
 # and re-enable just rustls + the formats we use, keeping the binary

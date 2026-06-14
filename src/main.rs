@@ -6,6 +6,7 @@ mod hook;
 mod install;
 mod paths;
 mod self_update;
+mod serve;
 mod shell;
 mod workspace;
 
@@ -38,6 +39,8 @@ fn main() -> Result<()> {
             Some(DashCmd::Json) => dash::cmd_json(),
             Some(DashCmd::Gc) => dash::cmd_gc(),
         },
+
+        Cmd::Serve { host, port } => serve::run(host, port),
 
         Cmd::Hook { agent, event, prompt } => hook::run(agent, &event, prompt),
 

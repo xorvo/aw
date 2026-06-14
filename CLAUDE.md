@@ -58,6 +58,7 @@ aw create my-task  # isolated workspace from a base
 aw start my-task   # enter it (env + tmux)
 aw list            # list workspaces
 aw dash            # live agent state across all workspaces
+aw serve           # phone remote control over the LAN (docs/serve.md)
 aw delete my-task
 ```
 
@@ -92,8 +93,17 @@ bump `Cargo.toml` **before** tagging. Details: [CONTRIBUTING.md](CONTRIBUTING.md
 | `AGENT_WORKSPACE` / `AGENT_WORKSPACE_NAME` | current workspace dir / name |
 | `AW_CONFIG_FILE` | config file path |
 
-## Subprojects
+## Phone remote control
 
-- **prototype/remote/** — a LAN remote-control prototype (Node daemon + mobile
-  PWA) for driving `aw` sessions from a phone. Design + roadmap in
+- **src/serve/** — `aw serve`, a LAN daemon + mobile PWA for driving `aw`
+  sessions from a phone. The client is TypeScript (`src/serve/assets/app.ts`);
+  its compiled `app.js` is committed and embedded via `include_str!`, so
+  `cargo build` needs no Node toolchain — rebuild it with
+  `scripts/build-frontend.sh` after editing `app.ts`. Usage in
+  [docs/serve.md](docs/serve.md); design + roadmap in
   [docs/remote-sessions.md](docs/remote-sessions.md).
+- **src/install/service.rs** — `aw install service`, a launchd LaunchAgent
+  that runs `aw serve` at login (folded into `aw install all`). `aw self
+  update` calls `service::refresh_after_upgrade()` to bounce the daemon onto
+  the new binary. macOS-only; plist rendering is pure + unit-tested, and
+  `AW_SERVICE_SKIP_LAUNCHCTL=1` writes the plist without touching launchd.

@@ -29,6 +29,21 @@ pub enum Mode {
     /// Active when `app.create` is `Some`. The form state lives there so
     /// `Mode` can stay `Copy`.
     Create,
+    /// Phone-pairing QR overlay. Active when `app.qr` is `Some`.
+    Qr,
+}
+
+/// State for the phone-pairing overlay (`Q` from Normal mode). Resolved
+/// once when the overlay opens — the URL doesn't change while it's up.
+#[derive(Debug, Clone)]
+pub struct QrOverlay {
+    /// The pairing URL, shown verbatim for copy/typing. `None` when
+    /// resolution failed (e.g. no home dir / no urandom).
+    pub url: Option<String>,
+    /// Pre-rendered half-block QR lines; empty when `url` is `None` or
+    /// encoding failed (the URL line still renders).
+    pub lines: Vec<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +105,8 @@ pub struct App {
     pub snapshot: Snapshot,
     /// In-popup workspace-creation form. `Some` iff `mode == Mode::Create`.
     pub create: Option<CreateForm>,
+    /// Phone-pairing QR overlay. `Some` iff `mode == Mode::Qr`.
+    pub qr: Option<QrOverlay>,
 }
 
 impl App {
@@ -105,6 +122,7 @@ impl App {
             scroll_offset: Cell::new(0),
             snapshot: snap,
             create: None,
+            qr: None,
         };
         app.rebuild_rows();
         app
@@ -312,6 +330,28 @@ impl App {
 
     pub fn exit_create(&mut self) {
         self.create = None;
+        self.mode = Mode::Normal;
+    }
+
+    /// Open the phone-pairing overlay. Resolving the URL touches disk
+    /// (token cache) and does a route lookup, so it happens once here
+    /// rather than per-frame; failures land in `QrOverlay::error` and
+    /// render inside the overlay instead of killing the TUI.
+    pub fn enter_qr(&mut self) {
+        let overlay = match crate::dash::remote_link::pairing_url() {
+            Ok(url) => {
+                let lines =
+                    crate::dash::remote_link::qr_lines(&url).unwrap_or_default();
+                QrOverlay { url: Some(url), lines, error: None }
+            }
+            Err(e) => QrOverlay { url: None, lines: Vec::new(), error: Some(e.to_string()) },
+        };
+        self.qr = Some(overlay);
+        self.mode = Mode::Qr;
+    }
+
+    pub fn exit_qr(&mut self) {
+        self.qr = None;
         self.mode = Mode::Normal;
     }
 

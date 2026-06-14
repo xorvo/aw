@@ -42,7 +42,7 @@ if [[ ":$PATH:" != *":$AW_BIN_DIR:"* ]]; then
 fi
 
 echo "Next steps:"
-echo "  • aw install all      Set up shell integration, agent hooks, tmux bindings"
+echo "  • aw install all      Shell integration, agent hooks, tmux bindings, serve-at-login"
 echo "  • aw edit-config      Edit your repos / local files config"
 echo "  • aw init             Materialize a base from your config"
 echo "  • aw create my-task   Create a workspace"

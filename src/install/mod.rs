@@ -15,6 +15,7 @@ pub mod claude;
 pub mod codex;
 pub mod marker;
 pub mod pi;
+pub mod service;
 pub mod shell_rc;
 pub mod tmux;
 
@@ -23,6 +24,13 @@ pub fn run(cmd: InstallCmd) -> Result<()> {
         InstallCmd::Shell { shell } => run_shell(shell),
         InstallCmd::Hooks { agent } => run_hooks(agent.unwrap_or(AgentKind::All)),
         InstallCmd::TmuxBindings { config } => tmux::install(config.as_deref()),
+        InstallCmd::Service { uninstall, host, port } => {
+            if uninstall {
+                service::uninstall()
+            } else {
+                service::install(host.as_deref(), port)
+            }
+        }
         InstallCmd::All => run_all(),
     }
 }
@@ -58,6 +66,9 @@ fn run_all() -> Result<()> {
     println!();
     println!("→ Tmux key bindings");
     let _ = tmux::install(None);
+    println!();
+    println!("→ Phone remote (aw serve at login)");
+    let _ = service::install(None, None);
     println!();
     println!("✅ Done. You may need to restart your shell.");
     Ok(())

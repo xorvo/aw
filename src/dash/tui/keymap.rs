@@ -9,7 +9,21 @@ pub fn on_key(app: &mut App, key: KeyEvent) -> Action {
         Mode::Filter => filter_mode(app, key),
         Mode::Normal => normal_mode(app, key),
         Mode::Create => create_mode(app, key),
+        Mode::Qr => qr_mode(app, key),
     }
+}
+
+/// The QR overlay is read-only — the usual dismiss keys close it and
+/// everything else is swallowed so a stray keystroke can't jump panes
+/// while the overlay hides the list.
+fn qr_mode(app: &mut App, key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('Q') => {
+            app.exit_qr();
+        }
+        _ => {}
+    }
+    Action::Continue
 }
 
 fn filter_mode(app: &mut App, key: KeyEvent) -> Action {
@@ -92,6 +106,10 @@ fn normal_mode(app: &mut App, key: KeyEvent) -> Action {
         }
         (KeyCode::Char('c'), _) => {
             app.enter_create();
+            Action::Continue
+        }
+        (KeyCode::Char('Q'), _) => {
+            app.enter_qr();
             Action::Continue
         }
         _ => Action::Continue,
@@ -429,6 +447,71 @@ mod tests {
         // The form is populated (bases may be empty in a test sandbox,
         // but the form itself must exist for the renderer to see it).
         assert!(app.create.is_some());
+    }
+
+    // ---- Q (phone-pairing QR overlay) ----
+
+    use crate::dash::tui::app::QrOverlay;
+
+    fn shim_qr_overlay(app: &mut App) {
+        // Bypass enter_qr's token/network resolution — construct the
+        // overlay directly, mirroring shim_create_form.
+        app.qr = Some(QrOverlay {
+            url: Some("http://192.168.1.10:8787/?t=tok".into()),
+            lines: vec!["██████".into()],
+            error: None,
+        });
+        app.mode = Mode::Qr;
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn capital_q_opens_qr_overlay_with_pairing_url() {
+        // Pin the token via env so the keypress never touches the real
+        // token cache on the dev machine.
+        std::env::set_var("AW_REMOTE_TOKEN", "test-token");
+        let mut app = App::new(Snapshot {
+            entries: vec![pane("%1", "alpha")],
+            dormant: vec![],
+        });
+        let action = on_key(&mut app, key(KeyCode::Char('Q')));
+        std::env::remove_var("AW_REMOTE_TOKEN");
+        assert!(matches!(action, Action::Continue));
+        assert_eq!(app.mode, Mode::Qr);
+        let overlay = app.qr.as_ref().expect("overlay populated");
+        let url = overlay.url.as_deref().expect("url resolved");
+        assert!(url.ends_with("/?t=test-token"), "got {}", url);
+        assert!(!overlay.lines.is_empty(), "QR lines rendered");
+    }
+
+    #[test]
+    fn esc_closes_qr_overlay() {
+        let mut app = App::new(Snapshot {
+            entries: vec![pane("%1", "alpha")],
+            dormant: vec![],
+        });
+        shim_qr_overlay(&mut app);
+        let action = on_key(&mut app, key(KeyCode::Esc));
+        assert!(matches!(action, Action::Continue));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.qr.is_none());
+    }
+
+    #[test]
+    fn other_keys_are_swallowed_while_qr_overlay_open() {
+        let mut app = App::new(Snapshot {
+            entries: vec![pane("%1", "alpha")],
+            dormant: vec![],
+        });
+        shim_qr_overlay(&mut app);
+        // 'p' would Park in Normal mode; the overlay must swallow it.
+        let action = on_key(&mut app, key(KeyCode::Char('p')));
+        assert!(matches!(action, Action::Continue));
+        assert_eq!(app.mode, Mode::Qr, "overlay stays open on unrelated keys");
+        // 'q' closes the overlay instead of quitting the whole popup.
+        let action = on_key(&mut app, key(KeyCode::Char('q')));
+        assert!(matches!(action, Action::Continue), "q must not Quit from the overlay");
+        assert_eq!(app.mode, Mode::Normal);
     }
 
     // ---- P (pin) ----

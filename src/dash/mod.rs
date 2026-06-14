@@ -10,6 +10,7 @@ use anyhow::Result;
 
 pub mod gc;
 pub mod notify;
+pub mod remote_link;
 pub mod render;
 pub mod state;
 pub mod tmux;
@@ -31,7 +32,7 @@ pub fn pinned_dir() -> Result<PathBuf> {
     Ok(state_root()?.join("pinned"))
 }
 
-fn state_root() -> Result<PathBuf> {
+pub(crate) fn state_root() -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("AW_STATE_DIR") {
         return Ok(PathBuf::from(p));
     }

@@ -5,6 +5,13 @@
 //!   1. `$AGENT_WORKSPACE` if it points at a workspace dir.
 //!   2. `$PWD` if it has `.agent-workspace/name`.
 //!   3. Walk parents until we find one.
+//!
+//! Divergence from bash: when the default branch is the one checked out, the
+//! fast-forward goes through `git merge --ff-only` so the index and worktree
+//! move with the ref. Bash used `update-ref` unconditionally, which left a
+//! stale index behind (upstream commits showed up inverted as staged
+//! changes). `update-ref` remains the path for the not-checked-out case so a
+//! feature-branch worktree is never touched.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -82,6 +89,13 @@ pub fn run() -> Result<()> {
                 );
                 skipped += 1;
             }
+            SyncResult::SkippedWorktreeBlocked(branch) => {
+                println!(
+                    "  ⚠️  {} ({}): local changes block fast-forward, skipping (stash or commit, then re-run)",
+                    repo_name, branch
+                );
+                skipped += 1;
+            }
             SyncResult::SkippedNoLocal(branch) => {
                 println!(
                     "  ⚠️  {}: local branch '{}' not found, skipping",
@@ -114,6 +128,7 @@ enum SyncResult {
     SkippedNoBranch,
     SkippedDiverged(String),
     SkippedNoLocal(String),
+    SkippedWorktreeBlocked(String),
     FailedFetch,
     FailedUpdate(String),
 }
@@ -148,7 +163,14 @@ fn sync_repo(dir: &Path) -> SyncResult {
         return SyncResult::SkippedDiverged(default_branch);
     }
 
-    if git(
+    if capture(dir, &["symbolic-ref", "--quiet", "HEAD"]) == local_ref {
+        // Default branch is checked out: fast-forward through merge so the
+        // index and worktree move with the ref. git aborts if local changes
+        // would be overwritten, so nothing is ever clobbered.
+        if git(dir, &["merge", "--ff-only", "--quiet", &remote_ref]).is_err() {
+            return SyncResult::SkippedWorktreeBlocked(default_branch);
+        }
+    } else if git(
         dir,
         &["update-ref", &local_ref, &remote_sha, &local_sha],
     )

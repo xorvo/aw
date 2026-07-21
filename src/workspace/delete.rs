@@ -30,6 +30,7 @@ pub fn run(name: &str) -> Result<()> {
 
     println!("🗑️  Deleting workspace...");
     std::fs::remove_dir_all(&workspace_dir)?;
+    crate::manifest::remove_session(&format!("aw-{}", name));
     println!("✅ Workspace '{}' deleted", name);
     Ok(())
 }

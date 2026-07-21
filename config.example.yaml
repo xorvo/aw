@@ -23,6 +23,20 @@ test:
 
   description: A minimal test workspace
 
+# Agent settings.
+#
+# resume_commands: what `aw resurrect` types into a restored pane to reopen
+# the agent's conversation. When the hooks recorded the conversation id, a
+# `{session_id}` placeholder is substituted (shell-quoted) so the *exact*
+# conversation reopens; without an id the built-in `--continue`-style
+# fallback reopens the directory's latest. Built-in defaults cover
+# claude/codex/opencode/kimi (docs/resurrect.md); set an agent to "" to
+# restore its pane as a plain shell instead.
+# agent_config:
+#   resume_commands:
+#     claude: "claude --resume {session_id}"
+#     codex: ""
+
 # Agent-specific command restrictions (used by custom hooks)
 # agent_config:
 #   claude_code:

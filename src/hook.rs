@@ -16,6 +16,8 @@ pub fn run(agent: AgentKind, event: &str, prompt: Option<String>) -> Result<()> 
         AgentKind::Claude => "claude",
         AgentKind::Codex => "codex",
         AgentKind::Pi => "pi",
+        AgentKind::Opencode => "opencode",
+        AgentKind::Kimi => "kimi",
         // `--agent all` doesn't make sense for a hook firing, but tolerate it
         // by treating as 'unknown'.
         AgentKind::All => "agent",
@@ -40,6 +42,7 @@ pub fn run(agent: AgentKind, event: &str, prompt: Option<String>) -> Result<()> 
     // write a payload (Claude on certain events, Codex SessionStart) work fine.
     let stdin_payload = read_stdin_lossy();
     let prompt_from_stdin = extract_prompt(&stdin_payload, agent_name);
+    let session_id_from_stdin = extract_session_id(&stdin_payload);
 
     // Load any existing state to preserve `last_prompt` across events that
     // don't carry one.
@@ -58,6 +61,11 @@ pub fn run(agent: AgentKind, event: &str, prompt: Option<String>) -> Result<()> 
         }
     } else if let Some(p) = prompt_from_stdin {
         state.last_prompt = p;
+    }
+
+    // Keep the last-seen conversation id across events that omit it.
+    if let Some(id) = session_id_from_stdin {
+        state.session_id = id;
     }
 
     // Resolve env-derived fields. These come "for free" from the env that
@@ -85,6 +93,18 @@ pub fn run(agent: AgentKind, event: &str, prompt: Option<String>) -> Result<()> 
 
     state.write_atomic(&path)?;
 
+    // Shadow the session into the durable manifest so `aw resurrect` can
+    // rebuild it after a tmux-server death. Best-effort: state files are
+    // the primary record, the manifest is recovery data.
+    crate::manifest::record_pane(
+        &state.session,
+        &state.workspace,
+        &state.cwd,
+        agent_name,
+        &pane_id,
+        &state.session_id,
+    );
+
     // Fire a notification on transition into `waiting`. Cheap and per-event;
     // we don't try to dedupe.
     if matches!(status, Status::Waiting) {
@@ -110,8 +130,32 @@ fn map_event(agent: &str, event: &str) -> Option<Status> {
         ("pi", "input") => Some(Status::Working),
         ("pi", "agent_end") => Some(Status::Idle),
 
+        // OpenCode and Kimi Code expose Claude-compatible hook events, so
+        // they share Claude's event vocabulary.
+        ("opencode" | "kimi", "UserPromptSubmit") => Some(Status::Working),
+        ("opencode" | "kimi", "PreToolUse") => Some(Status::Working),
+        ("opencode" | "kimi", "Notification") => Some(Status::Waiting),
+        ("opencode" | "kimi", "Stop") => Some(Status::Idle),
+
         _ => None,
     }
+}
+
+/// Conversation id from the hook payload. Claude-style hooks use
+/// `session_id`; tolerate the camelCase and Codex rollout spellings too.
+fn extract_session_id(payload: &str) -> Option<String> {
+    if payload.trim().is_empty() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    for key in ["session_id", "sessionId", "rollout_id"] {
+        if let Some(s) = v.get(key).and_then(|v| v.as_str()) {
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn read_stdin_lossy() -> String {

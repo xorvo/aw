@@ -4,6 +4,7 @@ mod dash;
 mod git;
 mod hook;
 mod install;
+mod manifest;
 mod paths;
 mod self_update;
 mod serve;
@@ -28,6 +29,8 @@ fn main() -> Result<()> {
         Cmd::Sync => workspace::sync::run(),
         Cmd::Reset { hard } => workspace::reset::run(hard),
         Cmd::OpenHome => workspace::edit::open_home(),
+        Cmd::Resurrect { dry_run } => workspace::resurrect::run(dry_run),
+        Cmd::Snapshot => workspace::resurrect::snapshot(),
 
         Cmd::Dash { command, filter } => match command {
             None => dash::tui::run_popup(filter),
@@ -55,6 +58,7 @@ fn main() -> Result<()> {
         },
 
         Cmd::ShellStart { name, no_tmux } => workspace::start::shell_start(&name, no_tmux),
+        Cmd::SessionCreated { name } => workspace::start::session_created(&name),
         Cmd::DetectWorkspace { cwd } => shell::detect::run(&cwd),
         Cmd::SidebarLoop => dash::tui::run_sidebar_loop(),
         Cmd::ListWorkspaces => workspace::listing::list_workspaces(),

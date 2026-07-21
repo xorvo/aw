@@ -33,6 +33,11 @@ pub struct PaneState {
     /// Unix epoch seconds.
     pub last_activity: u64,
     pub last_prompt: String,
+    /// Agent-reported conversation id from the hook payload (`session_id`
+    /// in Claude-style hook JSON). Empty when never reported. Feeds the
+    /// resurrect manifest so a restored pane resumes the exact conversation.
+    #[serde(default)]
+    pub session_id: String,
     /// Filled in at load time from `parked/<pane>` sentinel; not persisted
     /// in the per-pane JSON.
     #[serde(skip)]
@@ -65,6 +70,7 @@ impl PaneState {
             last_event: String::new(),
             last_activity: now_epoch(),
             last_prompt: String::new(),
+            session_id: String::new(),
             parked: false,
             label: String::new(),
             pinned: false,
@@ -228,6 +234,7 @@ impl Snapshot {
                             last_event: String::new(),
                             last_activity: 0,
                             last_prompt: String::new(),
+                            session_id: String::new(),
                             parked: parked_now,
                             label,
                             pinned: pinned_now,
@@ -251,6 +258,17 @@ impl Snapshot {
                             }
                         }
                     }
+                    // Keep the resurrect manifest honest too: sessions and
+                    // panes this same server proves dead were closed on
+                    // purpose. Records from a previous server pid are
+                    // crash survivors and are left for `aw resurrect`.
+                    let live_sessions: std::collections::HashSet<String> =
+                        panes.iter().map(|p| p.session.clone()).collect();
+                    crate::manifest::prune_with_live_server(
+                        &live_sessions,
+                        &live_ids,
+                        crate::dash::tmux::server_pid(),
+                    );
                 }
 
                 // (5) Dormant workspaces: on-disk workspaces with no live

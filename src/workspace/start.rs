@@ -46,6 +46,7 @@ pub fn run(name: &str, no_tmux: bool) -> Result<()> {
             .unwrap_or(false);
         if exists {
             println!("⚠️  Tmux session '{}' already exists", session);
+            crate::manifest::record_session(&session, name, workspace_dir.to_str().unwrap());
             // Skip the y/n prompt for now; just attach. The shell wrapper
             // path (`_shell-start`) handles the prompt path.
             let _ = std::process::Command::new("tmux")
@@ -53,6 +54,11 @@ pub fn run(name: &str, no_tmux: bool) -> Result<()> {
                 .status();
         } else {
             println!("Creating tmux session: {}", session);
+            // Record before the (blocking) attach so a server death while
+            // attached still leaves a resurrect record. The server pid may
+            // be unresolvable yet (fresh server); the first hook event
+            // fills it in.
+            crate::manifest::record_session(&session, name, workspace_dir.to_str().unwrap());
             let _ = std::process::Command::new("tmux")
                 .args([
                     "new-session",
@@ -131,6 +137,7 @@ pub fn open_or_attach_session(name: &str) -> Result<()> {
                 );
             }
         }
+        crate::manifest::record_session(&session, name, dir_str);
         let _ = std::process::Command::new("tmux")
             .args(["switch-client", "-t", &session])
             .status();
@@ -138,7 +145,8 @@ pub fn open_or_attach_session(name: &str) -> Result<()> {
     }
 
     // Outside tmux: exec into `new-session -A` (attach if exists, create
-    // otherwise). Replaces the current process.
+    // otherwise). Replaces the current process — record first.
+    crate::manifest::record_session(&session, name, dir_str);
     let mut cmd = std::process::Command::new("tmux");
     cmd.args([
         "new-session", "-A",
@@ -185,8 +193,12 @@ pub fn shell_start(name: &str, no_tmux: bool) -> Result<()> {
                 dir = sh_quote(workspace_dir.to_str().unwrap()),
             );
             println!("fi");
+            println!("aw _session-created {name} 2>/dev/null || true", name = sh_quote(name));
             println!("tmux switch-client -t {sess}", sess = sh_quote(&session));
         } else {
+            // Record before the exec replaces the shell; the manifest is
+            // what lets `aw resurrect` rebuild this session later.
+            println!("aw _session-created {name} 2>/dev/null || true", name = sh_quote(name));
             println!("exec tmux new-session -A -s {sess} -c {dir}",
                 sess = sh_quote(&session),
                 dir = sh_quote(workspace_dir.to_str().unwrap()),
@@ -202,6 +214,23 @@ pub fn shell_start(name: &str, no_tmux: bool) -> Result<()> {
     println!("export AGENT_WORKSPACE_NAME={}", sh_quote(name));
     for hook in collect_hooks(&paths.install_dir, &workspace_dir) {
         println!("source {}", sh_quote(hook.to_str().unwrap()));
+    }
+    Ok(())
+}
+
+/// `aw _session-created <name>` — internal: shadow a just-created (or
+/// about-to-be-created) session into the resurrect manifest. Called from
+/// the shell snippet emitted by `_shell-start`, where the Rust process has
+/// already exited by the time the session exists.
+pub fn session_created(name: &str) -> Result<()> {
+    let paths = Paths::from_env()?;
+    let workspace_dir = paths.workspace_dir(name);
+    if workspace_dir.is_dir() {
+        crate::manifest::record_session(
+            &format!("aw-{}", name),
+            name,
+            &workspace_dir.display().to_string(),
+        );
     }
     Ok(())
 }

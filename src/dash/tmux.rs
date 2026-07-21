@@ -66,6 +66,42 @@ pub fn pane_session(pane_id: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Pid of the running tmux server, or None if unreachable. Resolved via
+/// `list-sessions` (works from inside and outside tmux alike); every
+/// session reports the same server-wide `#{pid}`.
+pub fn server_pid() -> Option<u32> {
+    let out = tmux_command()
+        .args(["list-sessions", "-F", "#{pid}"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Names of all live sessions, or None when the server is unreachable —
+/// the same live-vs-unreachable distinction as [`PaneListing`].
+pub fn list_session_names() -> Option<Vec<String>> {
+    let out = tmux_command()
+        .args(["list-sessions", "-F", "#{session_name}"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+    )
+}
+
 /// All live pane ids on the local tmux server. Empty if tmux not running.
 pub fn list_pane_ids() -> Vec<String> {
     let out = tmux_command()

@@ -10,5 +10,6 @@ pub mod list;
 pub mod listing;
 pub mod meta;
 pub mod reset;
+pub mod resurrect;
 pub mod start;
 pub mod sync;

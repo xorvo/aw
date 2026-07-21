@@ -59,6 +59,8 @@ aw start my-task   # enter it (env + tmux)
 aw list            # list workspaces
 aw dash            # live agent state across all workspaces
 aw serve           # phone remote control over the LAN (docs/serve.md)
+aw resurrect       # rebuild sessions after a tmux-server death (docs/resurrect.md)
+aw snapshot        # save the live session layout before a planned shutdown
 aw delete my-task
 ```
 
@@ -90,6 +92,7 @@ bump `Cargo.toml` **before** tagging. Details: [CONTRIBUTING.md](CONTRIBUTING.md
 | `~/.agent-workspaces/` (`AW_INSTALL_DIR`) | config.yaml + base workspaces |
 | `~/agent-workspaces/` (`AW_WORKSPACES_DIR`) | created workspaces |
 | `~/.cache/aw/panes/*.json` (`AW_STATE_DIR`) | per-pane agent state |
+| `~/.cache/aw/sessions.json` | durable session manifest for `aw resurrect` (docs/resurrect.md) |
 | `AGENT_WORKSPACE` / `AGENT_WORKSPACE_NAME` | current workspace dir / name |
 | `AW_CONFIG_FILE` | config file path |
 

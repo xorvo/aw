@@ -616,6 +616,7 @@ mod tests {
             last_event: String::new(),
             last_activity: 0,
             last_prompt: String::new(),
+            session_id: String::new(),
             parked: false,
             label: String::new(),
             pinned: false,

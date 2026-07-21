@@ -45,6 +45,14 @@ fn run_hooks(agent: AgentKind) -> Result<()> {
         AgentKind::Claude => claude::install(),
         AgentKind::Codex => codex::install(),
         AgentKind::Pi => pi::install(),
+        AgentKind::Opencode | AgentKind::Kimi => {
+            // No hook installer yet — these agents are supported at runtime
+            // (`aw hook --agent opencode|kimi`, resurrect resume commands)
+            // but their hook configs must be wired by hand for now.
+            println!("ℹ️  No automatic hook installer for this agent yet.");
+            println!("   Wire its hooks to call: aw hook --agent <agent> --event <event>");
+            Ok(())
+        }
         AgentKind::All => {
             // Best-effort: each step prints its own status; don't bail early.
             let _ = claude::install();

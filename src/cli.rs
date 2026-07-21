@@ -58,6 +58,18 @@ pub enum Cmd {
     /// Open tool home directory in editor
     OpenHome,
 
+    /// Recreate aw tmux sessions lost to a tmux-server death (kill-server,
+    /// power loss) and resume their agents
+    Resurrect {
+        /// Show what would be restored without touching tmux
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Save the live aw session layout to the resurrect manifest (run
+    /// before a planned shutdown; restore later with `aw resurrect`)
+    Snapshot,
+
     /// Tmux-based dashboard for live agent state
     Dash {
         /// Open the popup directly in filter (search) mode.
@@ -115,6 +127,10 @@ pub enum Cmd {
         #[arg(long)]
         no_tmux: bool,
     },
+    /// Internal: record a session in the resurrect manifest (called by the
+    /// shell snippet emitted by `_shell-start`)
+    #[command(name = "_session-created", hide = true)]
+    SessionCreated { name: String },
     /// Internal: detect the workspace path containing `cwd` (for auto-activation)
     #[command(name = "_detect-workspace", hide = true)]
     DetectWorkspace { cwd: String },
@@ -206,6 +222,8 @@ pub enum AgentKind {
     Claude,
     Codex,
     Pi,
+    Opencode,
+    Kimi,
     All,
 }
 

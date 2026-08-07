@@ -405,11 +405,23 @@ impl App {
     pub fn filter_push(&mut self, c: char) {
         self.filter.push(c);
         self.rebuild_rows();
+        self.snap_to_top_match();
     }
 
     pub fn filter_pop(&mut self) {
         self.filter.pop();
         self.rebuild_rows();
+        self.snap_to_top_match();
+    }
+
+    /// While a filter is active, keep the cursor on the best match (the
+    /// first selectable row) so Enter always jumps to the top result.
+    fn snap_to_top_match(&mut self) {
+        if self.filter.trim().is_empty() {
+            return;
+        }
+        self.selected = 0;
+        self.snap_to_selectable();
     }
 
     pub fn filter_clear(&mut self) {
@@ -567,20 +579,39 @@ fn group_filtered(panes: &[PaneState], filter: &str) -> Vec<(String, Vec<PaneSta
         let mut keep: Vec<(u32, PaneState)> = panes
             .iter()
             .filter_map(|p| {
-                // Include both `agent` (claude/codex/pi — so `/codex`
-                // matches all codex panes) and `label` (the tmux
-                // window_name / pane_title, which carries a `/rename`'d
-                // Claude session name).
-                let hay = format!(
+                // Field-weighted scoring: a match in the workspace name
+                // outranks the same match in the label (tmux window_name /
+                // pane_title, carries a `/rename`'d Claude session name),
+                // agent (claude/codex/pi — so `/codex` matches all codex
+                // panes), prompt, or cwd. The joined haystack at weight 1
+                // keeps multi-word filters that span fields matching.
+                let joined = format!(
                     "{} {} {} {} {}",
                     p.workspace, p.agent, p.label, p.last_prompt, p.cwd
                 );
+                let fields: [(&str, u32); 6] = [
+                    (&p.workspace, 16),
+                    (&p.label, 8),
+                    (&p.agent, 4),
+                    (&p.last_prompt, 2),
+                    (&p.cwd, 1),
+                    (&joined, 1),
+                ];
                 let mut buf = Vec::new();
-                let utf32 = nucleo_matcher::Utf32Str::new(&hay, &mut buf);
-                pat.score(utf32, &mut matcher).map(|score| (score, p.clone()))
+                fields
+                    .iter()
+                    .filter_map(|(hay, weight)| {
+                        let utf32 = nucleo_matcher::Utf32Str::new(hay, &mut buf);
+                        pat.score(utf32, &mut matcher).map(|s| s * weight)
+                    })
+                    .max()
+                    .map(|score| (score, p.clone()))
             })
             .collect();
-        keep.sort_by(|a, b| b.0.cmp(&a.0));
+        keep.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| b.1.last_activity.cmp(&a.1.last_activity))
+        });
         keep.into_iter().map(|(_, p)| p).collect()
     };
 
@@ -873,5 +904,79 @@ mod tests {
         }).collect();
         assert_eq!(panes_visible.len(), 1, "cwd filter should narrow to one pane");
         assert_eq!(panes_visible[0].pane_id, "%1");
+    }
+
+    fn filtered_workspace_order(panes: Vec<PaneState>, filter: &str) -> Vec<String> {
+        group_filtered(&panes, filter)
+            .into_iter()
+            .map(|(ws, _)| ws)
+            .collect()
+    }
+
+    #[test]
+    fn pane_filter_workspace_match_outranks_prompt_match() {
+        // "billing" appears in beta's last_prompt but is alpha-billing's
+        // workspace name; the workspace match must rank first.
+        let ws_match = pane("%1", "billing", "claude");
+        let mut prompt_match = pane("%2", "zeta", "claude");
+        prompt_match.last_prompt = "fix the billing endpoint".into();
+
+        let order = filtered_workspace_order(vec![prompt_match, ws_match], "billing");
+        assert_eq!(order, vec!["billing".to_string(), "zeta".to_string()]);
+    }
+
+    #[test]
+    fn pane_filter_ties_break_by_recency() {
+        // Same workspace name → identical scores; the more recently active
+        // pane must come first.
+        let mut stale = pane("%1", "alpha", "claude");
+        stale.last_activity = 100;
+        let mut fresh = pane("%2", "alpha", "codex");
+        fresh.last_activity = 200;
+
+        let groups = group_filtered(&vec![stale, fresh], "alpha");
+        assert_eq!(groups.len(), 1);
+        let ids: Vec<&str> = groups[0].1.iter().map(|p| p.pane_id.as_str()).collect();
+        assert_eq!(ids, vec!["%2", "%1"]);
+    }
+
+    #[test]
+    fn filter_snaps_cursor_to_top_match() {
+        // Cursor starts on beta's pane; typing a filter that reranks the
+        // list must land the cursor on the best match, not stay at the
+        // stale index.
+        let a = pane("%1", "alpha", "claude");
+        let b = pane("%2", "beta", "claude");
+        let mut app = App::new(snap(vec![a, b], vec![]));
+        app.move_down(); // now on beta's pane
+        assert_eq!(app.selected_pane().map(|p| p.pane_id.as_str()), Some("%2"));
+
+        for c in "beta".chars() {
+            app.filter_push(c);
+        }
+        assert_eq!(
+            app.selected_pane().map(|p| p.pane_id.as_str()),
+            Some("%2"),
+            "top match must be selected after filtering"
+        );
+
+        // Backspacing to a filter matching alpha best re-snaps.
+        app.filter_clear();
+        for c in "alpha".chars() {
+            app.filter_push(c);
+        }
+        assert_eq!(app.selected_pane().map(|p| p.pane_id.as_str()), Some("%1"));
+    }
+
+    #[test]
+    fn pane_filter_multiword_spans_fields() {
+        // A filter whose words live in different fields still matches via
+        // the joined haystack.
+        let mut p = pane("%1", "alpha", "claude");
+        p.last_prompt = "deploy staging".into();
+        let other = pane("%2", "beta", "claude");
+
+        let order = filtered_workspace_order(vec![other, p], "alpha deploy");
+        assert_eq!(order, vec!["alpha".to_string()]);
     }
 }

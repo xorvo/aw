@@ -1,0 +1,7 @@
+---
+source: tests/list.rs
+expression: cleaned
+---
+📂 Workspaces in: <WORKSPACES_DIR>
+
+  • feat-a (base: default, created: <TIMESTAMP>)

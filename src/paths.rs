@@ -1,6 +1,6 @@
-//! Path resolution: env-var overrides + defaults that match the bash CLI.
+//! Path resolution: env-var overrides + defaults.
 //!
-//! The defaults intentionally mirror what the bash script set:
+//! Defaults:
 //!   AW_INSTALL_DIR    -> ~/.agent-workspaces
 //!   AW_WORKSPACES_DIR -> ~/agent-workspaces
 //!   AW_BIN_DIR        -> ~/.local/bin

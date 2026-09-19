@@ -1,0 +1,13 @@
+---
+source: tests/init.rs
+expression: tree_manifest(&base_root)
+---
+entries:
+  ".agent-workspace":
+    kind: dir
+  ".agent-workspace/repo-cache":
+    kind: dir
+  ".agent-workspace/repo-cache/alpha.git":
+    kind: dir
+  ".agent-workspace/repo-cache/beta.git":
+    kind: dir

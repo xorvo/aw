@@ -124,5 +124,4 @@ guard against dangerous operations (e.g. blocking `kubectl --context=production`
 - [Prompt customization](docs/prompt-customization.md) — p10k, starship, oh-my-zsh
 - [Quick command reference](docs/quick-reference.md)
 - [Performance notes](docs/performance-considerations.md) — large-repo handling
-- [Migrating from the bash CLI](docs/migration.md)
 - [Contributing](CONTRIBUTING.md) — building from source, the release process

@@ -1,7 +1,7 @@
 //! `aw edit-config`, `aw edit-base`, `aw open-home` — invoke an editor on
 //! the relevant directory.
 //!
-//! Editor selection mirrors the bash CLI: prefer `$EDITOR` for `open-home`;
+//! Editor selection: prefer `$EDITOR` for `open-home`;
 //! for `edit-config` and `edit-base`, walk a hard-coded preference list
 //! (cursor → code → nvim → vim → nano), and fall back to opening the
 //! containing directory in a file manager (macOS `open`, Linux `xdg-open`).

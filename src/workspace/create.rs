@@ -1,11 +1,11 @@
 //! `aw create <name> [--base <base>]` — materialize a workspace from a base.
 //!
-//! Steps (must match bash semantics for parity):
+//! Steps:
 //!
 //! 1. Validate base exists, workspace name doesn't.
 //! 2. Create the workspace dir + `.agent-workspace/` metadata files
-//!    EARLY — bash does this before any cloning so a partial failure
-//!    still leaves a "registered" workspace that `list` can see.
+//!    EARLY — before any cloning, so a partial failure still leaves a
+//!    "registered" workspace that `list` can see.
 //! 3. Copy base files (everything except `.agent-workspace/`).
 //!    `CLAUDE.md` and `AGENTS.md` are SYMLINKED so edits propagate from the
 //!    base to all workspaces; everything else is a deep copy.
@@ -57,8 +57,7 @@ pub fn run(name: &str, base_name: &str) -> Result<()> {
     std::fs::create_dir_all(&workspace_dir)?;
 
     // Metadata: written first so partial failures still leave the workspace
-    // visible to `list`. Bash uses `date` which is locale-formatted; we use
-    // RFC3339 for stability across machines.
+    // visible to `list`. RFC3339 for stability across machines.
     let created_stamp = format_now_rfc3339();
     WorkspaceMeta::write(&workspace_dir, name, base_name, &created_stamp)?;
 
@@ -150,7 +149,7 @@ fn symlink(_src: &Path, _dst: &Path) -> std::io::Result<()> {
 }
 
 /// `cp -R src dst`, preferring the system `cp` so semantics (permissions,
-/// resource forks on macOS, hard links) match bash exactly.
+/// resource forks on macOS, hard links) match a shell `cp -R`.
 fn cp_recursive(src: &Path, dst: &Path) -> Result<()> {
     let status = Command::new("cp")
         .arg("-R")
@@ -175,7 +174,7 @@ fn clone_repos_with_reference(repos: &[String], base_dir: &Path, workspace_dir: 
             std::thread::spawn(move || {
                 let name = git::repo_basename(&url);
                 let cache = cache_root.join(format!("{}.git", name));
-                // Refresh cache if present (mirrors bash's "fetch first")
+                // Refresh cache if present (fetch first)
                 if cache.is_dir() {
                     let _ = git::run(&[
                         "-C", cache.to_str().unwrap(),
@@ -198,7 +197,7 @@ fn clone_repos_with_reference(repos: &[String], base_dir: &Path, workspace_dir: 
         })
         .collect();
 
-    // Print results in spawn order to match bash output ordering.
+    // Print results in spawn order so output is deterministic.
     for (h, url) in handles.into_iter().zip(repos.iter()) {
         let name = git::repo_basename(url);
         match h.join().expect("worker panic") {
@@ -210,7 +209,7 @@ fn clone_repos_with_reference(repos: &[String], base_dir: &Path, workspace_dir: 
 
 /// Parse and execute one `local_files` entry.
 ///
-/// Mirrors bash's `parse_local_file_entry` + `copy_local_entry`:
+/// Entry forms:
 ///   "src"            -> copy <src> into target/<basename(src)>
 ///   "src -> name"    -> copy <src> into target/<name>
 ///   tilde at start of src expands to $HOME.

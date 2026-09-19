@@ -1,30 +1,16 @@
-//! Smoke test: confirm the harness can run both binaries against a sandbox
-//! and capture normalized output. This is intentionally minimal — real
-//! parity scenarios live in `tests/parity_*.rs`.
+//! Smoke test: confirm the harness can run `aw` against a sandbox and
+//! capture normalized output. Intentionally minimal — real scenarios live in
+//! the other files under `tests/`.
 
 mod common;
 
-use common::{capture, Bin, TestEnv};
+use common::{capture, TestEnv};
 
 #[test]
-fn bash_help_runs() {
+fn help_runs() {
     let env = TestEnv::new();
-    let out = env.run(Bin::Bash, &["help"]);
-    let cap = capture(&env, &out);
-    assert_eq!(cap.exit, 0, "bash help failed:\n{}", cap.stderr);
-    assert!(
-        cap.stdout.contains("Manage isolated workspaces"),
-        "unexpected help text:\n{}",
-        cap.stdout
-    );
-}
-
-#[test]
-fn rust_help_runs() {
-    let env = TestEnv::new();
-    let out = env.run(Bin::Rust, &["--help"]);
-    let cap = capture(&env, &out);
-    assert_eq!(cap.exit, 0, "rust --help failed:\n{}", cap.stderr);
+    let cap = capture(&env, &env.run(&["--help"]));
+    assert_eq!(cap.exit, 0, "--help failed:\n{}", cap.stderr);
     assert!(
         cap.stdout.contains("Manage isolated workspaces"),
         "unexpected help text:\n{}",

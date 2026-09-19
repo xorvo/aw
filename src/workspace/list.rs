@@ -1,14 +1,14 @@
 //! `aw list` — enumerate workspaces with base + creation timestamp.
 //!
-//! Mirrors the bash CLI's output:
+//! Output:
 //!   📂 Workspaces in: <dir>
 //!
 //!     • foo (base: default, created: <stamp>)
 //!     ● bar (base: default, created: <stamp>)   <- green, has live aw-bar tmux
 //!
-//! When the workspaces directory is missing, bash prints "No workspaces
+//! When the workspaces directory is missing we print "No workspaces
 //! directory found"; when it's present but empty, "No workspaces found" plus
-//! a hint. We keep both code paths.
+//! a hint.
 
 use std::collections::HashSet;
 use std::process::Command;

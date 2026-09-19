@@ -1,6 +1,6 @@
 //! Config file (`config.yaml`) parser.
 //!
-//! Schema mirrors the bash CLI's expectations: top-level keys are base names,
+//! Schema: top-level keys are base names,
 //! each with optional `repos: [...]` and `local_files: [...]` lists. The keys
 //! `agent_config` and `workspace_defaults` are reserved (not bases) and
 //! filtered when listing available bases.
@@ -12,7 +12,6 @@ use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 
 /// Base names treated as configuration sections, not workspace templates.
-/// Mirrors the `grep -v` filters in the bash `show_config`.
 const RESERVED_KEYS: &[&str] = &["agent_config", "workspace_defaults"];
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -62,10 +61,8 @@ const DEFAULT_RESUME_COMMANDS: &[(&str, &str)] = &[
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Insertion-stable mapping of base name -> Base. We use BTreeMap for
-    /// deterministic ordering when listing bases (the bash version sorts by
-    /// `keys | .[]` which yq emits in document order; alphabetical via
-    /// BTreeMap is close enough and stable across runs.)
+    /// Base name -> Base. BTreeMap for deterministic (alphabetical) ordering
+    /// when listing bases.
     pub bases: BTreeMap<String, Base>,
     pub agent_config: AgentConfig,
 }

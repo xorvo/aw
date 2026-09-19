@@ -20,15 +20,13 @@ aw/
 ├── hooks/pi/              # vendored pi extension (embedded into the binary)
 ├── tests/
 │   ├── common/            # TestEnv sandbox, fixture builders, snapshot normalization
-│   ├── fixtures/aw-bash   # frozen bash CLI; spec the Rust port mirrors
-│   ├── parity_*.rs        # bash-vs-rust scenario tests
-│   ├── rust_*.rs          # Rust-only feature tests (dashboard, install, shell, state, …)
+│   ├── <feature>.rs       # one integration test file per subcommand/feature
 │   └── snapshots/         # insta golden files, committed
 ├── docs/
 │   ├── dash.md            # dashboard reference (state schema, keys, hook contract)
-│   └── migration.md       # for users coming from the bash CLI
+│   └── *.md               # resurrect, serve, shell integration, …
 ├── .github/workflows/
-│   ├── parity.yml         # CI: parity tests + cargo test on every PR
+│   ├── ci.yml             # CI: cargo test on every push / PR
 │   └── release.yml        # CI: build + publish macOS tarballs on `v*` tag
 ├── install.sh             # cargo build + place binary + bootstrap config
 └── CONTRIBUTING.md        # you are here
@@ -41,7 +39,7 @@ aw/
 cargo test --tests
 
 # Run a single test file:
-cargo test --test parity_create
+cargo test --test create
 
 # Update a snapshot intentionally:
 INSTA_UPDATE=always cargo test --tests
@@ -52,12 +50,6 @@ cargo insta review
 The test harness (`tests/common/`) gives every test a sandboxed `$HOME`,
 state directory, and tmux socket dir. Tests that need a real tmux server
 spawn one via `tmux -S /tmp/awts-<pid>-<rand>.sock` and kill it on Drop.
-
-The bash CLI lives at `tests/fixtures/aw-bash` as the parity reference.
-Don't edit it — it's frozen at commit `3ba2893` (the heredoc body of the
-old `install.sh`). If we ever need to diverge from bash behavior on
-purpose, update the parity test snapshot and document the divergence in
-the commit message.
 
 ## The release process
 
@@ -226,10 +218,8 @@ Today only macOS is supported. To add Linux / Windows:
 
 Two workflows live in `.github/workflows/`:
 
-  - **`parity.yml`** — runs on every push and PR. Builds, runs the full
-    test suite, and (in a separate `continue-on-error` job) tracks how
-    many `#[ignore]`'d Rust parity tests still need un-ignoring. Should
-    stay green on `main`.
+  - **`ci.yml`** — runs on every push and PR. Builds and runs the full
+    test suite. Should stay green on `main`.
   - **`release.yml`** — runs only on `v*` tag pushes. Builds artifacts,
     ad-hoc signs, packs tarballs, uploads to a new release. Needs
     `contents: write` permission on the workflow's GITHUB_TOKEN; this
@@ -246,6 +236,3 @@ Two workflows live in `.github/workflows/`:
   `dash::render::status_glyph`, tmux pane queries through
   `dash::tmux::list_panes_with_metadata`, marker-block edits through
   `install::marker`, and so on. Don't sprinkle equivalents.
-- Keep the `tests/fixtures/aw-bash` reference frozen. Any
-  intentional divergence from bash gets a parity-test snapshot update
-  in the same commit + a one-line note in the commit message.

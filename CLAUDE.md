@@ -9,12 +9,6 @@ for AI coding agents (Claude Code, Codex, pi), plus a tmux-based dashboard that
 shows every agent's live state. Multiple agents work in parallel without
 colliding, and `aw dash` surfaces who's working / waiting / idle.
 
-> Historical note: `aw` began as a bash script embedded in `install.sh`. It has
-> since been ported to Rust. That bash version is now **frozen** at
-> `tests/fixtures/aw-bash` and used only as the parity reference for tests —
-> don't edit it (see below). `install.sh` today just runs `cargo build` and
-> places the binary.
-
 ## Architecture
 
 The CLI is a Rust binary (`src/`). Key modules:
@@ -36,19 +30,15 @@ dashboard state schema + hook contract in [docs/dash.md](docs/dash.md).
 ```bash
 cargo build                       # debug build
 cargo build --release             # optimized (what releases ship)
-cargo test --tests                # full suite (parity + rust-only)
-cargo test --test parity_create   # a single test file
+cargo test --tests                # full suite
+cargo test --test create          # a single test file
 INSTA_UPDATE=always cargo test --tests && cargo insta review  # update snapshots
 ./install.sh                      # build + place binary + bootstrap config
 ```
 
 Tests sandbox `$HOME`, the state dir, and the tmux socket per test
 (`tests/common/`). Some spawn a real tmux/zsh, so those tools must be installed
-locally (CI installs `tmux`, `zsh`, `jq`, `yq`).
-
-**Frozen bash baseline:** `tests/fixtures/aw-bash` is the parity reference,
-frozen at commit `3ba2893`. Don't edit it. Any intentional divergence from bash
-behavior gets a parity-snapshot update in the same commit plus a one-line note.
+locally (CI installs `tmux`, `zsh`).
 
 ## Common runtime commands
 

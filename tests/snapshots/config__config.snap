@@ -1,0 +1,9 @@
+---
+source: tests/config.rs
+expression: cap.stdout
+---
+📋 Configuration file: <CONFIG>
+✓ File exists
+
+Available base configurations:
+  • default

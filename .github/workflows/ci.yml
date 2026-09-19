@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install tmux, zsh
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends tmux zsh
+
+      - name: Ensure en_US.UTF-8 locale exists
+        run: |
+          sudo locale-gen en_US.UTF-8
+          locale -a | grep en_US.utf8
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --tests --locked
+        env:
+          # Fail (don't autoupdate) on snapshot drift.
+          INSTA_UPDATE: "no"
+          CI: "true"

@@ -31,7 +31,7 @@ pub fn normalize(env: &TestEnv, s: &str) -> String {
     for (from, to) in replacements {
         out = out.replace(&from, &to);
     }
-    // Strip ANSI escapes — bash CLI prints them on some terminals.
+    // Strip ANSI escapes so colored output snapshots stably.
     out = strip_ansi(&out);
     // Trim trailing whitespace per line for diff stability.
     out = out

@@ -5,7 +5,7 @@
 //! Two entry points:
 //!
 //! - [`run`] is the direct user-invocation: launches tmux (default if
-//!   available) or `exec $SHELL` after sourcing hooks. Matches the bash CLI.
+//!   available) or `exec $SHELL` after sourcing hooks.
 //!
 //! - [`shell_start`] emits shell text on stdout for the wrapper function
 //!   defined in `aw shell-init`. The wrapper runs `eval "$(aw _shell-start

@@ -1,12 +1,11 @@
 //! `.agent-workspace/` metadata files.
 //!
-//! Bash CLI writes:
 //!   .agent-workspace/name      — the workspace name
 //!   .agent-workspace/base      — the base it was created from
-//!   .agent-workspace/created   — `date` output (free-form timestamp)
+//!   .agent-workspace/created   — free-form timestamp (RFC3339 today; older
+//!                                workspaces may carry a locale `date` string)
 //!
-//! And reads back from these for `list`. We round-trip the same fields so
-//! workspaces created by either binary are interchangeable.
+//! `list` reads these back.
 
 use std::path::Path;
 

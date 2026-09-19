@@ -1,0 +1,8 @@
+---
+source: tests/list.rs
+expression: cap.stdout
+---
+📂 Workspaces in: <WORKSPACES_DIR>
+
+  No workspaces found
+  💡 Run 'aw create <name>' to create your first workspace

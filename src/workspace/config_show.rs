@@ -1,8 +1,7 @@
 //! `aw config` — show config file location + available bases.
 //!
-//! Output format mirrors the bash CLI for a smooth migration. The exit code
-//! is 0 even when the file is missing (matching bash, which only prints "❌
-//! File not found" without exiting non-zero).
+//! Exit code is 0 even when the file is missing — it only prints
+//! "❌ File not found".
 
 use anyhow::Result;
 

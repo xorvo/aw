@@ -1,5 +1,5 @@
-//! Workspace lifecycle: ports of the bash CLI's `init`, `create`, `start`,
-//! `list`, `delete`, `config`, `edit-*`, `sync`, `open-home` subcommands.
+//! Workspace lifecycle: `init`, `create`, `start`, `list`, `delete`,
+//! `config`, `edit-*`, `sync`, `reset`, `open-home`, `resurrect`, `snapshot`.
 
 pub mod config_show;
 pub mod create;

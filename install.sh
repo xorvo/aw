@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Install the `aw` Rust binary and bootstrap the configuration directory.
 #
-# This used to be an 800-line bash script that embedded the entire CLI as a
-# heredoc. The CLI is now a Rust binary at the repo root; this file only
-# builds + installs it and seeds `~/.agent-workspaces/config.yaml`.
+# The CLI is a Rust binary at the repo root; this file only builds + installs
+# it and seeds `~/.agent-workspaces/config.yaml`.
 #
 # After this runs, the user can `aw install all` to wire shell integration,
 # agent hooks, and tmux key bindings.

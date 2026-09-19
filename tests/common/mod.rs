@@ -1,4 +1,4 @@
-//! Test harness for parity + dashboard tests.
+//! Shared harness for the integration tests.
 //!
 //! Each integration test file at `tests/<name>.rs` declares `mod common;` to
 //! pull this module in. Cargo treats files under `tests/common/` as a shared
@@ -14,34 +14,11 @@ use tempfile::TempDir;
 pub mod fixtures;
 pub mod snapshot;
 
-/// Which `aw` binary the test is driving. Parity tests run the same scenario
-/// twice (once per arm); Rust-only tests pin `Bin::Rust`.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Bin {
-    /// The frozen bash reference at `tests/fixtures/aw-bash`.
-    Bash,
-    /// The Rust binary built by `cargo build`.
-    Rust,
-}
-
-impl Bin {
-    pub fn path(&self) -> PathBuf {
-        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        match self {
-            Bin::Bash => manifest.join("tests/fixtures/aw-bash"),
-            // assert_cmd resolves the Cargo-built binary including any
-            // CARGO_TARGET_DIR override; fall back to target/debug for plain
-            // `cargo test` invocations.
-            Bin::Rust => assert_cmd::cargo::cargo_bin("aw"),
-        }
-    }
-
-    pub fn label(&self) -> &'static str {
-        match self {
-            Bin::Bash => "bash",
-            Bin::Rust => "rust",
-        }
-    }
+/// The `aw` binary under test. assert_cmd resolves the Cargo-built binary
+/// including any CARGO_TARGET_DIR override; falls back to target/debug for
+/// plain `cargo test` invocations.
+pub fn aw_bin() -> PathBuf {
+    assert_cmd::cargo::cargo_bin("aw")
 }
 
 /// Sandbox: a self-contained set of directories pointed at by aw's env-var
@@ -102,7 +79,7 @@ impl TestEnv {
         )
         .expect("write default config");
 
-        // Drop in shims for every editor either binary might try to launch.
+        // Drop in shims for every editor `aw` might try to launch.
         // Each is `exit 0` — `command -v` finds them, the launch returns
         // immediately, and no Cursor/VS Code window pops up mid-test.
         for name in ["cursor", "code", "nvim", "vim", "nano", "open", "xdg-open"] {
@@ -183,21 +160,21 @@ impl TestEnv {
     }
 
     /// Run `aw <args>` with the sandbox env. Captures stdout, stderr, and exit.
-    pub fn run(&self, bin: Bin, args: &[&str]) -> Output {
-        self.run_with_stdin(bin, args, "")
+    pub fn run(&self, args: &[&str]) -> Output {
+        self.run_with_stdin(args, "")
     }
 
     /// Run `aw <args>` with stdin piped in. Use for confirmation prompts
     /// (e.g. `delete` reads `y/N`).
-    pub fn run_with_stdin(&self, bin: Bin, args: &[&str], stdin: &str) -> Output {
+    pub fn run_with_stdin(&self, args: &[&str], stdin: &str) -> Output {
         use std::io::Write;
         use std::process::Stdio;
-        let mut cmd = Command::new(bin.path());
+        let mut cmd = Command::new(aw_bin());
         cmd.args(args);
         configure_env(&mut cmd, self);
-        if !stdin.is_empty() {
-            cmd.stdin(Stdio::piped());
-        }
+        // Never inherit the runner's stdin — subcommands that read it to
+        // EOF would hang on an open pipe.
+        cmd.stdin(if stdin.is_empty() { Stdio::null() } else { Stdio::piped() });
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = cmd.spawn().expect("failed to spawn aw");
         if !stdin.is_empty() {
@@ -238,7 +215,7 @@ fn configure_env(cmd: &mut Command, env: &TestEnv) {
         .env("GIT_AUTHOR_DATE", "2026-01-01T00:00:00Z")
         .env("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z")
         .env("TZ", "UTC")
-        // UTF-8 locale: `C` mangles bash's emoji output. `en_US.UTF-8` is
+        // UTF-8 locale: `C` mangles the emoji output. `en_US.UTF-8` is
         // available on macOS by default; on Linux CI we install `en_US.UTF-8`
         // (or fall back to `C.UTF-8` via locale-gen).
         .env("LC_ALL", "en_US.UTF-8")

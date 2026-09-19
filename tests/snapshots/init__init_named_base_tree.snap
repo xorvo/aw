@@ -1,0 +1,11 @@
+---
+source: tests/init.rs
+expression: "tree_manifest(&env.install_dir.join(\"base/dev\"))"
+---
+entries:
+  ".agent-workspace":
+    kind: dir
+  ".agent-workspace/repo-cache":
+    kind: dir
+  ".agent-workspace/repo-cache/dev-repo.git":
+    kind: dir

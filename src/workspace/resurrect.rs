@@ -40,16 +40,17 @@ impl RestorePane {
 pub struct RestoreSession {
     pub session: String,
     pub cwd: String,
-    /// Deduped by (agent, cwd), most recently active first. Empty means
-    /// "recreate the session with a plain shell".
+    /// Deduped by (agent, cwd, session_id), most recently active first.
+    /// Never empty: sessions with no agent to resume are pruned, not
+    /// restored as bare shells.
     pub panes: Vec<RestorePane>,
 }
 
 #[derive(Debug, Default)]
 pub struct Plan {
     pub restore: Vec<RestoreSession>,
-    /// Deliberately closed under the still-running server, or workspace
-    /// dir gone — dropped from the manifest.
+    /// Deliberately closed under the still-running server, workspace dir
+    /// gone, or no agent recorded to resume — dropped from the manifest.
     pub prune: Vec<String>,
     pub already_live: Vec<String>,
 }
@@ -78,10 +79,17 @@ pub fn build_plan(
             plan.prune.push(name.clone());
             continue;
         }
+        // Nothing but shells (or agents that never fired a hook) → an
+        // empty pane is worse than no session at all.
+        let panes = dedupe_panes(rec);
+        if panes.is_empty() {
+            plan.prune.push(name.clone());
+            continue;
+        }
         plan.restore.push(RestoreSession {
             session: name.clone(),
             cwd: rec.cwd.clone(),
-            panes: dedupe_panes(rec),
+            panes,
         });
     }
     plan
@@ -92,8 +100,10 @@ pub fn build_plan(
 /// are all kept — each resumes its own conversation. Only id-less
 /// duplicates in the same directory collapse, since the `--continue`
 /// fallback can only reopen that directory's latest conversation anyway.
+/// Agent-less panes (plain shells, snapshot-seen tools we don't know) are
+/// dropped — there is nothing to resume in them.
 fn dedupe_panes(rec: &SessionRecord) -> Vec<RestorePane> {
-    let mut panes: Vec<&PaneRecord> = rec.panes.values().collect();
+    let mut panes: Vec<&PaneRecord> = rec.panes.values().filter(|p| !p.agent.is_empty()).collect();
     panes.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
     let mut out: Vec<RestorePane> = Vec::new();
     for p in panes {
@@ -134,7 +144,7 @@ pub fn run(dry_run: bool) -> Result<()> {
                 manifest.sessions.remove(name);
             }
             manifest.save()?;
-            println!("🧹 Pruned {} closed session(s) from the manifest", plan.prune.len());
+            println!("🧹 Pruned {} session(s) from the manifest (closed, gone, or nothing to resume)", plan.prune.len());
         }
         println!("Nothing to resurrect.");
         return Ok(());
@@ -146,7 +156,7 @@ pub fn run(dry_run: bool) -> Result<()> {
             print_session_plan(r, &config);
         }
         if !plan.prune.is_empty() {
-            println!("Would prune {} closed session(s): {}", plan.prune.len(), plan.prune.join(", "));
+            println!("Would prune {} session(s) (closed, gone, or nothing to resume): {}", plan.prune.len(), plan.prune.join(", "));
         }
         return Ok(());
     }
@@ -187,7 +197,7 @@ pub fn run(dry_run: bool) -> Result<()> {
     manifest.save()?;
 
     if !plan.prune.is_empty() {
-        println!("🧹 Pruned {} closed session(s) from the manifest", plan.prune.len());
+        println!("🧹 Pruned {} session(s) from the manifest (closed, gone, or nothing to resume)", plan.prune.len());
     }
     println!("✅ Restored {}/{} session(s)", restored, plan.restore.len());
     if restored > 0 {
@@ -197,10 +207,6 @@ pub fn run(dry_run: bool) -> Result<()> {
 }
 
 fn print_session_plan(r: &RestoreSession, config: &Config) {
-    if r.panes.is_empty() {
-        println!("🔁 {} — shell only (no agent recorded)", r.session);
-        return;
-    }
     for p in &r.panes {
         match p.resume(config) {
             Some(cmd) => println!("🔁 {} — {} via `{}`", r.session, p.agent, cmd),
@@ -239,16 +245,6 @@ fn restore_session(r: &RestoreSession, config: &Config) -> Result<Vec<(String, R
         }
         out.push((pane_id, p.clone()));
     }
-    if out.is_empty() {
-        out.push((
-            first_pane,
-            RestorePane {
-                agent: String::new(),
-                cwd: r.cwd.clone(),
-                session_id: String::new(),
-            },
-        ));
-    }
     Ok(out)
 }
 
@@ -269,10 +265,15 @@ pub fn snapshot() -> Result<()> {
         }
     };
     let live_pid = crate::dash::tmux::server_pid();
+    let mut manifest = SessionManifest::load();
 
-    // Hook state enriches panes with the agent type + conversation id.
-    let mut hook_info: std::collections::HashMap<String, (String, String)> =
-        std::collections::HashMap::new();
+    // Agent type + conversation id per pane. Seeded from what the manifest
+    // already knows about *this* server's panes (a resurrected agent the
+    // user hasn't typed into yet has no hook file, and its
+    // `pane_current_command` is useless — Claude's native binary reports
+    // its version string, e.g. `2.1.267`), then overlaid with hook state,
+    // which is always at least as fresh.
+    let mut hook_info = manifest_agent_hints(&manifest, live_pid);
     if let Ok(read) = std::fs::read_dir(crate::dash::panes_dir()?) {
         for d in read.flatten() {
             if let Ok(s) = crate::dash::state::PaneState::read(&d.path()) {
@@ -283,7 +284,6 @@ pub fn snapshot() -> Result<()> {
 
     let now = crate::dash::state::now_epoch();
     let records = build_snapshot_records(&panes, &hook_info, live_pid, now);
-    let mut manifest = SessionManifest::load();
     // The snapshot is authoritative for *this* server: entries recorded
     // under the same pid but absent now were closed on purpose. Records
     // from older pids are crash survivors awaiting resurrect — keep them.
@@ -307,6 +307,27 @@ pub fn snapshot() -> Result<()> {
         n_sessions, n_agents
     );
     Ok(())
+}
+
+/// `pane_id → (agent, session_id)` for every agent pane the manifest
+/// recorded under the live server. Pane ids are never reused within one
+/// server lifetime, so same pid + same id is the same pane. Records from
+/// other pids are dead panes whose ids the new server may have handed out
+/// again — ignored.
+fn manifest_agent_hints(
+    manifest: &SessionManifest,
+    live_pid: Option<u32>,
+) -> std::collections::HashMap<String, (String, String)> {
+    let mut out = std::collections::HashMap::new();
+    let Some(pid) = live_pid else { return out };
+    for rec in manifest.sessions.values().filter(|r| r.server_pid == Some(pid)) {
+        for (id, p) in &rec.panes {
+            if !p.agent.is_empty() {
+                out.insert(id.clone(), (p.agent.clone(), p.session_id.clone()));
+            }
+        }
+    }
+    out
 }
 
 /// Pure core of `aw snapshot`: fold the live pane list into per-session
@@ -405,12 +426,15 @@ mod tests {
             ("aw-killed", rec("killed", Some(42), &[])),
             ("aw-crashed", rec("crashed", Some(7), &[("%1", "claude", "/ws/crashed", "sid-1", 5)])),
             ("aw-nodir", rec("nodir", Some(7), &[])),
+            // Crashed, dir exists, but only a shell was recorded → prune,
+            // never an empty pane.
+            ("aw-shell", rec("shell", Some(7), &[("%2", "", "/ws/shell", "", 5)])),
         ]);
         let live = vec!["aw-live".to_string(), "main".to_string()];
         let plan = build_plan(&m, Some(&live), Some(42), |ws| ws != "nodir");
 
         assert_eq!(plan.already_live, vec!["aw-live"]);
-        assert_eq!(plan.prune, vec!["aw-killed", "aw-nodir"]);
+        assert_eq!(plan.prune, vec!["aw-killed", "aw-nodir", "aw-shell"]);
         assert_eq!(plan.restore.len(), 1);
         assert_eq!(plan.restore[0].session, "aw-crashed");
         assert_eq!(plan.restore[0].panes, vec![RestorePane {
@@ -425,8 +449,8 @@ mod tests {
         // Power-outage case: no live server at all → every recorded
         // session is a candidate, regardless of its recorded pid.
         let m = manifest(vec![
-            ("aw-a", rec("a", Some(42), &[])),
-            ("aw-b", rec("b", None, &[])),
+            ("aw-a", rec("a", Some(42), &[("%1", "claude", "/ws/a", "", 1)])),
+            ("aw-b", rec("b", None, &[("%2", "codex", "/ws/b", "", 1)])),
         ]);
         let plan = build_plan(&m, None, None, |_| true);
         assert_eq!(plan.restore.len(), 2);
@@ -437,7 +461,7 @@ mod tests {
     fn plan_fresh_server_after_reboot_does_not_prune_old_records() {
         // User opened a plain tmux after reboot: server pid 99, but the
         // records were made under pid 42 → still resurrect candidates.
-        let m = manifest(vec![("aw-a", rec("a", Some(42), &[]))]);
+        let m = manifest(vec![("aw-a", rec("a", Some(42), &[("%1", "claude", "/ws/a", "", 1)]))]);
         let live = vec!["main".to_string()];
         let plan = build_plan(&m, Some(&live), Some(99), |_| true);
         assert_eq!(plan.restore.len(), 1);
@@ -474,6 +498,31 @@ mod tests {
         assert_eq!(foo.panes["%2"].session_id, "sid-9");
         assert_eq!(foo.panes["%3"].agent, "codex");
         assert!(!foo.panes.contains_key("%4"));
+    }
+
+    #[test]
+    fn manifest_hints_only_from_live_server_and_agent_panes() {
+        let m = manifest(vec![
+            // Same server: a resurrected claude nobody typed into yet.
+            ("aw-a", rec("a", Some(42), &[
+                ("%16", "claude", "/ws/a", "sid-16", 1),
+                ("%17", "", "/ws/a", "", 1), // shell → no hint
+            ])),
+            // Old server: %16 there was a different pane.
+            ("aw-b", rec("b", Some(7), &[("%16", "codex", "/ws/b", "sid-old", 1)])),
+        ]);
+        let hints = manifest_agent_hints(&m, Some(42));
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints["%16"], ("claude".to_string(), "sid-16".to_string()));
+        assert!(manifest_agent_hints(&m, None).is_empty());
+    }
+
+    #[test]
+    fn dedupe_drops_agentless_panes() {
+        let r = rec("w", None, &[("%1", "", "/ws/w", "", 10), ("%2", "claude", "/ws/w", "", 5)]);
+        let panes = dedupe_panes(&r);
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0].agent, "claude");
     }
 
     #[test]

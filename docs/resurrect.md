@@ -50,10 +50,16 @@ conversation anyway.
 
 The hook-driven manifest only knows about panes where agent hooks fired.
 `aw snapshot` captures the **live tmux truth** on demand: every window in
-every `aw-*` session, including plain shells and agents that never fired a
-hook (recognized by their foreground command). Run it before rebooting;
-after boot, `aw resurrect` rebuilds the lot. Shell-only windows are
-restored as shells in the right directory.
+every `aw-*` session, including agents that never fired a hook (recognized
+by their foreground command, or by what the manifest already recorded for
+that pane under the same server — a resurrected agent nobody has typed into
+yet). Run it before rebooting; after boot, `aw resurrect` rebuilds the lot.
+
+Panes with nothing to resume — plain shells, or an agent `aw` cannot
+identify (e.g. a freshly launched Claude that never fired a hook; its
+native binary reports its version string as the foreground command) — are
+**not** restored, and a session consisting only of such panes is dropped
+rather than recreated as an empty shell.
 
 The snapshot is authoritative for the server it sees: records it proves
 were closed on purpose are dropped, while crash-survivor records from an

@@ -1,5 +1,5 @@
 //! `aw install hooks --agent codex` — wire `aw hook` into
-//! `~/.codex/hooks.json` and ensure `codex_hooks = true` in
+//! `~/.codex/hooks.json` and ensure `[features].hooks = true` in
 //! `~/.codex/config.toml`.
 
 use std::path::Path;
@@ -28,11 +28,11 @@ pub fn install() -> Result<()> {
     }
 
     let cfg_path = dir.join("config.toml");
-    let touched = ensure_codex_hooks_enabled(&cfg_path)?;
+    let touched = ensure_hooks_feature_enabled(&cfg_path)?;
     if touched {
-        println!("✅ Enabled codex_hooks in {}", cfg_path.display());
+        println!("✅ Enabled features.hooks in {}", cfg_path.display());
     } else {
-        println!("✅ codex_hooks already enabled in {}", cfg_path.display());
+        println!("✅ features.hooks already enabled in {}", cfg_path.display());
     }
     Ok(())
 }
@@ -84,7 +84,7 @@ fn ensure_entries(root: &mut Value) -> usize {
     added
 }
 
-fn ensure_codex_hooks_enabled(path: &Path) -> Result<bool> {
+fn ensure_hooks_feature_enabled(path: &Path) -> Result<bool> {
     let raw = std::fs::read_to_string(path).unwrap_or_default();
     let mut doc: DocumentMut = if raw.trim().is_empty() {
         DocumentMut::new()
@@ -96,7 +96,7 @@ fn ensure_codex_hooks_enabled(path: &Path) -> Result<bool> {
     let already = doc
         .get("features")
         .and_then(|t| t.as_table())
-        .and_then(|t| t.get("codex_hooks"))
+        .and_then(|t| t.get("hooks"))
         .and_then(|v| v.as_bool())
         == Some(true);
 
@@ -107,7 +107,7 @@ fn ensure_codex_hooks_enabled(path: &Path) -> Result<bool> {
     if doc.get("features").is_none() {
         doc["features"] = toml_edit::table();
     }
-    doc["features"]["codex_hooks"] = value(true);
+    doc["features"]["hooks"] = value(true);
     std::fs::write(path, doc.to_string())
         .with_context(|| format!("write {}", path.display()))?;
     Ok(true)
@@ -125,14 +125,14 @@ mod tests {
     }
 
     #[test]
-    fn enables_codex_hooks_in_empty_config() {
+    fn enables_hooks_in_empty_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        assert!(ensure_codex_hooks_enabled(&path).unwrap());
+        assert!(ensure_hooks_feature_enabled(&path).unwrap());
         let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(raw.contains("codex_hooks = true"));
+        assert!(raw.contains("hooks = true"));
         // Idempotent.
-        assert!(!ensure_codex_hooks_enabled(&path).unwrap());
+        assert!(!ensure_hooks_feature_enabled(&path).unwrap());
     }
 
     #[test]
@@ -140,9 +140,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[features]\nother_thing = true\n").unwrap();
-        ensure_codex_hooks_enabled(&path).unwrap();
+        ensure_hooks_feature_enabled(&path).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("other_thing = true"));
-        assert!(raw.contains("codex_hooks = true"));
+        assert!(raw.contains("hooks = true"));
     }
 }

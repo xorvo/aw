@@ -77,7 +77,12 @@ pub fn pinned_glyph() -> &'static str {
 }
 
 /// "5s", "1m", "14m", "2h", "3d" — short relative time for the row line.
+/// `0` means "never recorded" (a pane no hook has fired in) → "—", not the
+/// age of the Unix epoch.
 pub fn humanize_age(epoch: u64) -> String {
+    if epoch == 0 {
+        return "—".to_string();
+    }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -111,4 +116,17 @@ pub fn group_by_workspace(panes: &[PaneState]) -> Vec<(String, Vec<&PaneState>)>
         .into_iter()
         .map(|k| (k.clone(), groups.remove(&k).unwrap_or_default()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn humanize_age_treats_zero_as_unknown() {
+        assert_eq!(humanize_age(0), "—");
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        assert_eq!(humanize_age(now - 5), "5s");
+        assert_eq!(humanize_age(now - 3 * 86_400), "3d");
+    }
 }

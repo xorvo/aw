@@ -14,6 +14,7 @@
 pub mod app;
 pub mod keymap;
 pub mod preview;
+pub mod switch;
 pub mod view;
 
 use std::io::{stdout, Write};

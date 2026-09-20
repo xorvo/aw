@@ -20,6 +20,7 @@ Commands:
   open-home    Open tool home directory in editor
   resurrect    Recreate aw tmux sessions lost to a tmux-server death (kill-server, power loss) and resume their agents
   snapshot     Save the live aw session layout to the resurrect manifest (run before a planned shutdown; restore later with `aw resurrect`)
+  switch       Jump between agents that were active in the last 24 hours
   dash         Tmux-based dashboard for live agent state
   serve        Serve the phone remote-control web app over the LAN
   hook         Write an agent state transition (called by Claude/Codex/pi hooks)

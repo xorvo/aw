@@ -16,6 +16,7 @@ The CLI is a Rust binary (`src/`). Key modules:
 - **src/main.rs / cli.rs** — clap dispatch + subcommand surface
 - **src/workspace/** — `init` / `create` / `list` / `start` / `delete` / `sync` / `reset` / `edit-*`
 - **src/dash/** — the popup TUI, sidebar, hook state (`~/.cache/aw/panes/*.json`), tmux merge
+- **src/dash/tui/switch.rs** — `aw switch`, the pane-centric quick switcher
 - **src/shell/** — `shell-init`, completions, workspace detection
 - **src/install/** — `aw install …` (shell rc, agent hooks, tmux bindings)
 - **src/hook.rs** — `aw hook` (agent state writer, called from agent hooks)
@@ -48,6 +49,7 @@ aw create my-task  # isolated workspace from a base
 aw start my-task   # enter it (env + tmux)
 aw list            # list workspaces
 aw dash            # live agent state across all workspaces
+aw switch          # quick-jump between agents active in the last 24h
 aw serve           # phone remote control over the LAN (docs/serve.md)
 aw resurrect       # rebuild sessions after a tmux-server death (docs/resurrect.md)
 aw snapshot        # save the live session layout before a planned shutdown

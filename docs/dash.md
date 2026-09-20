@@ -86,14 +86,68 @@ live alongside at `~/.cache/aw/parked/<pane_id>` — empty file = parked.
 | `Space` | collapse / expand workspace under cursor |
 | `q` / `Esc` | quit |
 
+## `aw switch` — the quick switcher
+
+`aw dash` answers "what is every agent doing?". `aw switch` answers the
+narrower question "which agent do I want to be looking at right now?", so it
+is a separate, deliberately smaller view: no workspace grouping, no preview,
+no control keys.
+
+```
+active agents  last 24h   2 waiting   1 working   2 idle
+
+▌1 🔔  Claude Code                                              2m
+       claude · team
+
+ 2 🔔  Creator portal telemetry gaps                            1h
+       claude · automation-qa
+
+ 3 ⚡  general-purpose                                          5h
+       claude · video-editing
+
+1-9 jump · j/k select · enter jump · q quit
+```
+
+One card per **pane**, newest activity first. Cards have no borders — the
+hierarchy is typographic: bold pane name, dim agent, accent-coloured
+workspace, status glyph in the usual working/waiting/idle colours.
+
+| Key | Does |
+|---|---|
+| `1`–`9` | jump straight to that card |
+| `j` / `k`, `↓` / `↑` | move the selection |
+| `Enter` | jump to the selection |
+| `q` / `Esc` | close |
+
+What it shows, and what it deliberately doesn't:
+
+- **Only panes with agent activity in the last 24 hours.** A rolling window,
+  not "since local midnight" — `aw` carries no date library, and a calendar
+  cut-off would blank the view at 00:05 for work done at 23:50.
+- **Only panes a hook has fired in.** Activity times come from the pane state
+  files, so a session you resurrected but haven't typed in yet won't appear
+  until its agent reports an event. `aw dash` still lists it.
+- **Parked panes never appear** — parking is "set this aside", the opposite of
+  a jump target.
+
+The layout adapts to the popup: cards cap at 80 columns and centre in a wider
+one, the visible count follows the height (with a `+N more` hint in the
+footer), and under 8 rows the header and footer drop so cards keep the space.
+
 ## Tmux bindings (installed by `aw install tmux-bindings`)
 
 ```tmux
 bind-key a display-popup -E -w 80% -h 60% "aw dash"
+bind-key Space display-popup -E -w 70% -h 60% "aw switch"
 bind-key N run-shell "aw dash next-ready"
 bind-key C-p run-shell "aw dash park"
 bind-key o run-shell "aw dash sidebar"
 ```
+
+`prefix + Space` overrides tmux's default `next-layout`, the least contested
+of the obvious keys — `s` is the session chooser and `Tab` is commonly
+rebound to `last-window`. Rebind it after the `aw` marker block if you want
+`next-layout` back.
 
 ## Other dashboard subcommands
 

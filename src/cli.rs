@@ -70,6 +70,9 @@ pub enum Cmd {
     /// before a planned shutdown; restore later with `aw resurrect`)
     Snapshot,
 
+    /// Jump between agents that were active in the last 24 hours
+    Switch,
+
     /// Tmux-based dashboard for live agent state
     Dash {
         /// Open the popup directly in filter (search) mode.

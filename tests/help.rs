@@ -30,7 +30,8 @@ fn help_mentions_all_public_subcommands() {
     for cmd in [
         "init", "create", "list", "start", "delete", "config", "edit-config",
         "edit-base", "sync", "reset", "open-home", "resurrect", "snapshot",
-        "dash", "serve", "hook", "shell-init", "completions", "install", "self",
+        "switch", "dash", "serve", "hook", "shell-init", "completions", "install",
+        "self",
     ] {
         assert!(help.contains(cmd), "help missing '{}':\n{}", cmd, help);
     }

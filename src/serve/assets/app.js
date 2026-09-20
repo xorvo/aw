@@ -22,7 +22,10 @@ function title(s) { return s.name || s.workspace || s.pane_id; }
 // the dashboard falls back to using the tmux label as the agent name, so the
 // two are the same string and printing both looks like a bug.
 function subtitle(s) {
-    const parts = [s.workspace, s.agent === title(s) ? '' : s.agent, relAgo(s.ageSec)];
+    const t = title(s);
+    // Skip anything the headline already says. With no tmux label and no agent,
+    // the title falls back to the workspace, and repeating it reads as a bug.
+    const parts = [s.workspace === t ? '' : s.workspace, s.agent === t ? '' : s.agent, relAgo(s.ageSec)];
     return parts.filter(Boolean).join(' · ');
 }
 function render() {
@@ -395,8 +398,8 @@ else
     kbd.focus(); });
 $('#term').addEventListener('click', () => { if (current)
     kbd.focus(); });
-kbd.addEventListener('focus', () => { kbOpen = true; $('#term').classList.add('live'); $('#kbBtn').classList.add('on'); setTimeout(fitViewport, 60); });
-kbd.addEventListener('blur', () => { kbOpen = false; $('#term').classList.remove('live'); $('#kbBtn').classList.remove('on'); setTimeout(fitViewport, 60); });
+kbd.addEventListener('focus', () => { kbOpen = true; $('#term').classList.add('live'); $('#kbBtn').classList.add('on'); checkWide(); setTimeout(fitViewport, 60); });
+kbd.addEventListener('blur', () => { kbOpen = false; $('#term').classList.remove('live'); $('#kbBtn').classList.remove('on'); checkWide(); setTimeout(fitViewport, 60); });
 // ---- full-screen draft editor: IME-friendly local editing, per-session draft ----
 const draft = $('#draft'), editor = $('#editor'), modeBtn = $('#modeBtn'), LS = window.localStorage;
 function wsKey() { const s = sessions.find(x => x.pane_id === current); return 'aw:draft:' + (s ? s.workspace : current); }
@@ -518,7 +521,7 @@ let wideOff = LS.getItem('aw:wideHintOff') === '1';
 function checkWide() {
     const hint = $('#wideHint'), t = $('#term');
     const ratio = t.scrollWidth / Math.max(1, t.clientWidth);
-    const show = !!current && !fitMode && !wideOff && ratio >= WIDE_RATIO;
+    const show = !!current && !fitMode && !wideOff && !kbOpen && ratio >= WIDE_RATIO;
     if (show) {
         const r = ratio >= 10 ? Math.round(ratio) : Math.round(ratio * 10) / 10;
         $('#wideHintText').textContent = r + '× wider than your screen.';

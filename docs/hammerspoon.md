@@ -53,6 +53,20 @@ Hammerspoon also needs macOS Accessibility permission to focus windows. If
 picking an agent switches the tmux pane but doesn't bring the window forward,
 grant it under System Settings → Privacy & Security → Accessibility.
 
+## The picker
+
+Each row carries a native macOS status dot — red wants your attention, yellow
+is busy, green is done — then the agent's own session title, with
+`status · workspace · agent · age` underneath.
+
+Typing filters on both lines, so `video wait` narrows by workspace and status
+at once. (Searching the subtitle is off by default in `hs.chooser`; the
+generated Lua turns it on.)
+
+Two agents can share a headline when they picked the same session title, which
+is what the workspace in the subtitle is for. The headline is the agent's title
+rather than the workspace because a single workspace often holds several panes.
+
 ## Recognising an already-open window
 
 This is the one piece that needs configuration on your side. The switcher
@@ -135,5 +149,11 @@ reference implementation, not the only possible client.
   Homebrew the running binary lives at a version-pinned Cellar path that the
   next `brew upgrade` deletes, while `/opt/homebrew/bin/aw` is a stable
   symlink. Re-run `aw install hammerspoon` if you move `aw` somewhere new.
-- The picker filters on both lines as you type, so `team wait` narrows by
-  workspace and status together.
+- `aw` resolves the `tmux` binary itself rather than trusting `PATH`. A
+  GUI-launched process gets a minimal `PATH` with no Homebrew on it, and tmux
+  then looks *absent* rather than broken, so the dashboard silently falls back
+  to reading state files only: no live pane names, no refreshed status. That
+  is why an earlier version of this menu showed every row as "claude".
+- Cosmetic chooser settings are applied inside a `pcall`, so an API difference
+  in some Hammerspoon version can leave the picker plainer but never stop it
+  from opening.

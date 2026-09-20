@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::install::marker;
+use crate::paths::which;
 
 const TEMPLATE: &str = include_str!("assets/aw.lua.tmpl");
 const LABEL: &str = "hammerspoon";
@@ -76,19 +77,6 @@ pub fn render(template: &str, aw_bin: &Path, tmux_bin: &str) -> String {
     template
         .replace("@AW@", &aw_bin.display().to_string())
         .replace("@TMUX@", tmux_bin)
-}
-
-/// First executable named `name` on PATH. Scans the filesystem rather than
-/// asking a shell, so a shell function or alias of the same name (both `aw`
-/// and `tmux` have one here) can't shadow the real binary.
-fn which(name: &str) -> Option<PathBuf> {
-    std::env::var("PATH").ok()?.split(':').find_map(|dir| {
-        if dir.is_empty() {
-            return None;
-        }
-        let cand = Path::new(dir).join(name);
-        cand.is_file().then_some(cand)
-    })
 }
 
 /// Path to bake in for `aw`.

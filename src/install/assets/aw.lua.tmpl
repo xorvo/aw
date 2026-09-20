@@ -128,20 +128,64 @@ function M.jump(row)
   sh(OPEN .. " -na Ghostty.app --args -e " .. q(TMUX .. " attach -t " .. q(row.session)))
 end
 
--- Show the chooser. Status leads the subtitle because it is the actionable
--- bit; the chooser filters on both lines as you type.
+-- Status presentation. The dot images are AppKit's shared status graphics, so
+-- they match every other macOS status dot: red wants your attention, yellow
+-- is busy, green is done. Colour lives in the image rather than in the text
+-- because `hs.chooser` filters on the *text* it is given, and handing it
+-- styled text risks breaking search — the one thing this picker must do.
+local STATUS = {
+  waiting = { image = "NSStatusUnavailable", label = "waiting" },
+  working = { image = "NSStatusPartiallyAvailable", label = "working" },
+  idle = { image = "NSStatusAvailable", label = "idle" },
+}
+
+local DOT_CACHE = {}
+
+local function status_dot(status)
+  local spec = STATUS[status]
+  if not spec then
+    return nil
+  end
+  if DOT_CACHE[status] == nil then
+    -- `false` marks "tried and failed" so a missing system image is looked up
+    -- once rather than on every keystroke. A row with no icon is fine; a
+    -- traceback here would take the whole picker down.
+    local ok, img = pcall(hs.image.imageFromName, spec.image)
+    DOT_CACHE[status] = (ok and img) or false
+  end
+  return DOT_CACHE[status] or nil
+end
+
+-- What to show as the row's headline.
+--
+-- `name` is the tmux window name, which is usually the agent's own title (a
+-- renamed Claude session, a subagent name). When it degenerates to the bare
+-- agent type it says nothing useful, so fall back to the workspace, which
+-- always identifies the work.
+local function headline(r)
+  local t = r.name
+  if t == nil or t == "" or t == r.agent then
+    return r.workspace
+  end
+  return t
+end
+
+-- Show the chooser. Text stays plain so the built-in filter matches it, and
+-- everything searchable (status word, workspace, agent) is in the subtitle.
 function M.show()
   local rows = panes()
   if #rows == 0 then
-    hs.alert.show("aw: no agent active in the last 24h")
+    hs.alert.show("aw · nothing active in the last 24h")
     return
   end
 
   local choices = {}
   for _, r in ipairs(rows) do
+    local spec = STATUS[r.status] or STATUS.idle
     choices[#choices + 1] = {
-      text = r.name,
-      subText = string.format("%s · %s · %s · %s", r.status, r.agent, r.workspace, r.age),
+      text = headline(r),
+      subText = string.format("%s  ·  %s  ·  %s  ·  %s", spec.label, r.workspace, r.agent, r.age),
+      image = status_dot(r.status),
       pane_id = r.pane_id,
       session = r.session,
     }
@@ -153,8 +197,20 @@ function M.show()
     end
   end)
   chooser:choices(choices)
-  chooser:placeholderText("aw agent")
-  chooser:rows(math.min(#choices, 10))
+  -- Everything past `choices` is optional. Wrapped together, searchSubText
+  -- first, so that if any setter is missing in some Hammerspoon version the
+  -- picker still opens rather than dying on a traceback.
+  pcall(function()
+    -- Off by default, which is why typing a workspace name used to match
+    -- nothing: only the headline was ever searched.
+    chooser:searchSubText(true)
+    chooser:bgDark(true)
+    chooser:fgColor({ red = 0.93, green = 0.94, blue = 0.96 })
+    chooser:subTextColor({ red = 0.58, green = 0.62, blue = 0.70 })
+    chooser:width(34)
+    chooser:rows(math.min(#rows, 12))
+    chooser:placeholderText("agent, workspace, or status")
+  end)
   chooser:show()
 end
 

@@ -68,3 +68,41 @@ fn env_path(key: &str) -> Option<PathBuf> {
 fn home_dir() -> Result<PathBuf> {
     dirs::home_dir().ok_or_else(|| anyhow!("could not determine home directory"))
 }
+
+/// First executable named `name` on `PATH`.
+///
+/// Scans PATH directories directly rather than asking a shell, so a shell
+/// function or alias of the same name can't shadow the real binary (`aw`
+/// itself is a shell function once `aw shell-init` is loaded, and oh-my-zsh
+/// aliases `tmux`).
+pub fn which(name: &str) -> Option<PathBuf> {
+    which_in(&std::env::var("PATH").unwrap_or_default(), name, |p| p.is_file())
+}
+
+/// Testable core of [`which`].
+pub fn which_in(
+    path_var: &str,
+    name: &str,
+    is_file: impl Fn(&std::path::Path) -> bool,
+) -> Option<PathBuf> {
+    path_var.split(':').find_map(|dir| {
+        if dir.is_empty() {
+            return None;
+        }
+        let cand = std::path::Path::new(dir).join(name);
+        is_file(&cand).then_some(cand)
+    })
+}
+
+#[cfg(test)]
+mod which_tests {
+    use super::*;
+
+    #[test]
+    fn which_in_finds_the_first_hit_and_skips_empty_entries() {
+        let hit = which_in("/a::/b", "tmux", |p| p == std::path::Path::new("/b/tmux"));
+        assert_eq!(hit.unwrap(), PathBuf::from("/b/tmux"));
+        assert!(which_in("/a:/b", "tmux", |_| false).is_none());
+        assert!(which_in("", "tmux", |_| true).is_none(), "empty PATH matches nothing");
+    }
+}

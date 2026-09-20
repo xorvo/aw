@@ -13,11 +13,54 @@ use std::process::{Command, Stdio};
 /// the environment already supplies one. Every tmux invocation in `aw`
 /// goes through here.
 pub(crate) fn tmux_command() -> Command {
-    let mut cmd = Command::new("tmux");
+    let mut cmd = Command::new(tmux_bin());
     if !env_locale_is_utf8() {
         cmd.env("LC_ALL", fallback_utf8_locale());
     }
     cmd
+}
+
+/// Where Homebrew and friends put tmux. Probed when PATH doesn't have it.
+const TMUX_CANDIDATES: &[&str] = &[
+    "/opt/homebrew/bin/tmux",
+    "/usr/local/bin/tmux",
+    "/usr/bin/tmux",
+];
+
+/// The tmux binary to run, resolved once per process.
+///
+/// `Command::new("tmux")` alone isn't enough. Anything started from the GUI —
+/// a Hammerspoon hotkey, Raycast, a launchd agent — inherits a minimal PATH
+/// with no Homebrew on it, so tmux looks *absent* rather than broken, and the
+/// dashboard quietly drops to its file-only fallback: no live pane names, no
+/// refreshed status. `install::service` already had to bake a PATH into its
+/// plist for exactly this reason; resolving here fixes every caller at once.
+fn tmux_bin() -> &'static str {
+    static BIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BIN.get_or_init(|| {
+        pick_tmux(
+            &std::env::var("PATH").unwrap_or_default(),
+            TMUX_CANDIDATES,
+            |p| p.is_file(),
+        )
+    })
+}
+
+/// Pure core of [`tmux_bin`]: PATH first, then known prefixes, then give up
+/// and let the OS resolve a bare `tmux` (so the error message stays familiar).
+fn pick_tmux(
+    path_var: &str,
+    candidates: &[&str],
+    is_file: impl Fn(&std::path::Path) -> bool + Copy,
+) -> String {
+    if let Some(p) = crate::paths::which_in(path_var, "tmux", is_file) {
+        return p.display().to_string();
+    }
+    candidates
+        .iter()
+        .find(|c| is_file(std::path::Path::new(c)))
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "tmux".to_string())
 }
 
 /// Whether the effective locale (LC_ALL > LC_CTYPE > LANG, per POSIX) is
@@ -283,6 +326,26 @@ pub fn switch_to_pane(pane_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::path::Path;
+
+    #[test]
+    fn pick_tmux_prefers_path_then_known_prefixes() {
+        // On PATH: use it, ignore the fallbacks.
+        let on_path = pick_tmux("/nope:/opt/homebrew/bin", TMUX_CANDIDATES, |p| {
+            p == Path::new("/opt/homebrew/bin/tmux")
+        });
+        assert_eq!(on_path, "/opt/homebrew/bin/tmux");
+
+        // Bare PATH (what a GUI-launched process gets): probe the prefixes.
+        let gui = pick_tmux("/usr/bin:/bin", TMUX_CANDIDATES, |p| {
+            p == Path::new("/opt/homebrew/bin/tmux")
+        });
+        assert_eq!(gui, "/opt/homebrew/bin/tmux");
+
+        // Nothing anywhere: fall back to a bare name so the OS reports it.
+        assert_eq!(pick_tmux("/usr/bin", TMUX_CANDIDATES, |_| false), "tmux");
+    }
 
     /// Helper: run a closure with a scratch locale environment, restoring
     /// whatever was there before. Serialized by the caller.

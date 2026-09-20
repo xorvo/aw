@@ -59,11 +59,16 @@ local function panes()
 end
 
 -- Every attached tmux client as { tty, session }.
+--
+-- Fields are separated by `|` rather than a tab: a tab has to survive Lua
+-- source, the shell, and tmux's own format parser, and it only takes one of
+-- them to eat it for every line to stop matching — which silently disables
+-- window reuse, because no client is ever found.
 local function clients()
-  local out = sh(TMUX .. " list-clients -F '#{client_tty}\t#{client_session}'")
+  local out = sh(TMUX .. " list-clients -F '#{client_tty}|#{client_session}'")
   local list = {}
   for line in tostring(out or ""):gmatch("[^\n]+") do
-    local tty, session = line:match("^(%S+)\t(.+)$")
+    local tty, session = line:match("^([^|]+)|(.+)$")
     if tty then
       list[#list + 1] = { tty = tty, session = session }
     end
@@ -125,7 +130,11 @@ function M.jump(row)
   -- window lands on the pane the moment it attaches.
   sh(TMUX .. " select-window -t " .. q(row.pane_id))
   sh(TMUX .. " select-pane -t " .. q(row.pane_id))
-  sh(OPEN .. " -na Ghostty.app --args -e " .. q(TMUX .. " attach -t " .. q(row.session)))
+  -- `-e` consumes the *rest of argv* as the command and its arguments, so each
+  -- token has to arrive as its own word. Quoting the whole command into a
+  -- single argument makes Ghostty try to exec that entire string as a filename
+  -- ("login: tmux attach -t 'aw-x': No such file or directory").
+  sh(OPEN .. " -na Ghostty.app --args -e " .. TMUX .. " attach -t " .. q(row.session))
 end
 
 -- Status presentation.

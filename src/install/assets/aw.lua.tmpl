@@ -128,18 +128,50 @@ function M.jump(row)
   sh(OPEN .. " -na Ghostty.app --args -e " .. q(TMUX .. " attach -t " .. q(row.session)))
 end
 
--- Status presentation. The dot images are AppKit's shared status graphics, so
--- they match every other macOS status dot: red wants your attention, yellow
--- is busy, green is done. Colour lives in the image rather than in the text
--- because `hs.chooser` filters on the *text* it is given, and handing it
--- styled text risks breaking search — the one thing this picker must do.
+-- Status presentation.
+--
+-- The dots are drawn, not borrowed. AppKit's `NSStatusAvailable` family is a
+-- set of small bitmaps meant for the menu bar, so a chooser row scales them up
+-- and they turn soft. `hs.canvas` renders at the display's backing scale, which
+-- stays sharp and lets the colours match the terminal dashboard: red wants
+-- your attention, amber is busy, green is done.
 local STATUS = {
-  waiting = { image = "NSStatusUnavailable", label = "waiting" },
-  working = { image = "NSStatusPartiallyAvailable", label = "working" },
-  idle = { image = "NSStatusAvailable", label = "idle" },
+  waiting = { label = "waiting", system = "NSStatusUnavailable",
+              color = { red = 0.96, green = 0.34, blue = 0.33 } },
+  working = { label = "working", system = "NSStatusPartiallyAvailable",
+              color = { red = 0.99, green = 0.72, blue = 0.24 } },
+  idle = { label = "idle", system = "NSStatusAvailable",
+           color = { red = 0.36, green = 0.80, blue = 0.44 } },
 }
 
+-- Canvas points. Render generously and let the chooser scale *down* — a
+-- downsample stays crisp where an upsample does not.
+local DOT_PT = 36
 local DOT_CACHE = {}
+
+-- A filled pip inside a translucent ring of the same hue.
+local function draw_dot(spec)
+  local c = spec.color
+  local mid = DOT_PT / 2
+  local canvas = hs.canvas.new({ x = 0, y = 0, w = DOT_PT, h = DOT_PT })
+  canvas:appendElements({
+    type = "circle",
+    action = "stroke",
+    center = { x = mid, y = mid },
+    radius = DOT_PT * 0.34,
+    strokeColor = { red = c.red, green = c.green, blue = c.blue, alpha = 0.30 },
+    strokeWidth = DOT_PT * 0.07,
+  }, {
+    type = "circle",
+    action = "fill",
+    center = { x = mid, y = mid },
+    radius = DOT_PT * 0.21,
+    fillColor = c,
+  })
+  local image = canvas:imageFromCanvas()
+  canvas:delete() -- offscreen scaffolding; don't leave it around
+  return image
+end
 
 local function status_dot(status)
   local spec = STATUS[status]
@@ -147,11 +179,15 @@ local function status_dot(status)
     return nil
   end
   if DOT_CACHE[status] == nil then
-    -- `false` marks "tried and failed" so a missing system image is looked up
-    -- once rather than on every keystroke. A row with no icon is fine; a
+    -- `false` marks "tried and failed" so a broken lookup is attempted once
+    -- rather than on every keystroke. A row without an icon is survivable; a
     -- traceback here would take the whole picker down.
-    local ok, img = pcall(hs.image.imageFromName, spec.image)
-    DOT_CACHE[status] = (ok and img) or false
+    local ok, img = pcall(draw_dot, spec)
+    if not ok or not img then
+      local ok2, sys = pcall(hs.image.imageFromName, spec.system)
+      img = ok2 and sys or nil
+    end
+    DOT_CACHE[status] = img or false
   end
   return DOT_CACHE[status] or nil
 end

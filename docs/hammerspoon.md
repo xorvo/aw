@@ -55,9 +55,15 @@ grant it under System Settings → Privacy & Security → Accessibility.
 
 ## The picker
 
-Each row carries a native macOS status dot — red wants your attention, yellow
-is busy, green is done — then the agent's own session title, with
+Each row carries a status dot — red wants your attention, amber is busy, green
+is done — then the agent's own session title, with
 `status · workspace · agent · age` underneath.
+
+The dots are drawn with `hs.canvas` rather than taken from AppKit's
+`NSStatusAvailable` family. Those are small menu-bar bitmaps, so a chooser row
+scales them up and they go soft; a canvas renders at the display's backing
+scale and stays sharp. The system images remain as a fallback if the draw
+fails.
 
 Typing filters on both lines, so `video wait` narrows by workspace and status
 at once. (Searching the subtitle is off by default in `hs.chooser`; the

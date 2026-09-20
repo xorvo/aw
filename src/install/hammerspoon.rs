@@ -21,8 +21,9 @@ const LABEL: &str = "hammerspoon";
 /// Lua comment prefix for the init.lua marker block.
 const LUA_COMMENT: &str = "--";
 
-/// What init.lua gets. The hotkey lives here rather than in the generated
-/// file so rebinding it survives a re-install.
+/// What init.lua gets on first install. The hotkey lives here rather than in
+/// the generated file so you can rebind it — which only works because we
+/// never rewrite an existing block (see `install`).
 const INIT_BODY: &str = "\
 local aw = require(\"aw\")
 aw.bind({ \"cmd\", \"alt\" }, \"a\") -- change the hotkey here; re-installing won't touch it
@@ -77,19 +78,32 @@ pub fn render(template: &str, aw_bin: &Path, tmux_bin: &str) -> String {
         .replace("@TMUX@", tmux_bin)
 }
 
-/// First `tmux` on PATH, or the plain name as a last resort so the generated
-/// file is still readable and hand-fixable.
-fn tmux_path() -> String {
-    for dir in std::env::var("PATH").unwrap_or_default().split(':') {
+/// First executable named `name` on PATH. Scans the filesystem rather than
+/// asking a shell, so a shell function or alias of the same name (both `aw`
+/// and `tmux` have one here) can't shadow the real binary.
+fn which(name: &str) -> Option<PathBuf> {
+    std::env::var("PATH").ok()?.split(':').find_map(|dir| {
         if dir.is_empty() {
-            continue;
+            return None;
         }
-        let cand = Path::new(dir).join("tmux");
-        if cand.is_file() {
-            return cand.display().to_string();
-        }
+        let cand = Path::new(dir).join(name);
+        cand.is_file().then_some(cand)
+    })
+}
+
+/// Path to bake in for `aw`.
+///
+/// PATH first, `current_exe` second. Not the other way around: under Homebrew
+/// `current_exe` resolves to the version-pinned Cellar path
+/// (`.../Cellar/aw/1.9.0/bin/aw`), which stops existing on the next upgrade,
+/// while `/opt/homebrew/bin/aw` is a stable symlink. Same reasoning for a
+/// source install, where PATH finds the copy `install.sh` placed rather than
+/// `target/release/aw` in a build tree.
+fn aw_path() -> Result<PathBuf> {
+    if let Some(p) = which("aw") {
+        return Ok(p);
     }
-    "tmux".to_string()
+    std::env::current_exe().context("resolve own path")
 }
 
 pub fn install() -> Result<()> {
@@ -102,17 +116,27 @@ pub fn install() -> Result<()> {
     }
 
     let dir = config_dir()?;
-    let aw_bin = std::env::current_exe().context("resolve own path")?;
-    let lua = render(TEMPLATE, &aw_bin, &tmux_path());
+    let aw_bin = aw_path()?;
+    let tmux_bin = which("tmux")
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "tmux".to_string());
+    let lua = render(TEMPLATE, &aw_bin, &tmux_bin);
 
     let lua_path = dir.join("aw.lua");
     std::fs::create_dir_all(&dir).with_context(|| format!("mkdir {}", dir.display()))?;
     std::fs::write(&lua_path, lua).with_context(|| format!("write {}", lua_path.display()))?;
     println!("✅ Wrote {}", lua_path.display());
 
+    // Write-once: `marker::apply` replaces the entire body, so re-running
+    // would revert a hotkey the user rebound. The block is a bootstrap, not
+    // managed state — only the generated aw.lua is ours to overwrite.
     let init = dir.join("init.lua");
-    marker::apply(&init, LUA_COMMENT, LABEL, INIT_BODY)?;
-    println!("✅ Hooked into {} (⌘⌥A)", init.display());
+    if marker::has(&init, LUA_COMMENT, LABEL) {
+        println!("✅ {} already requires it — hotkey left as you set it", init.display());
+    } else {
+        marker::apply(&init, LUA_COMMENT, LABEL, INIT_BODY)?;
+        println!("✅ Hooked into {} (⌘⌥A)", init.display());
+    }
 
     println!("   Reload: Hammerspoon menubar → Reload Config");
     println!("   Recognising an open window needs these in your tmux config:");
@@ -170,6 +194,26 @@ mod tests {
         let roots = vec![a, b];
         assert!(has_app(&roots, "Ghostty.app"));
         assert!(!has_app(&roots, "Hammerspoon.app"));
+    }
+
+    #[test]
+    fn existing_block_is_never_rewritten_so_a_rebound_hotkey_survives() {
+        let tmp = TempDir::new().unwrap();
+        let init = tmp.path().join("init.lua");
+        marker::apply(&init, LUA_COMMENT, LABEL, INIT_BODY).unwrap();
+        assert!(marker::has(&init, LUA_COMMENT, LABEL));
+
+        // The user rebinds the hotkey inside the block.
+        let mine = std::fs::read_to_string(&init)
+            .unwrap()
+            .replace("{ \"cmd\", \"alt\" }, \"a\"", "{ \"cmd\", \"ctrl\", \"alt\" }, \"space\"");
+        std::fs::write(&init, &mine).unwrap();
+
+        // A re-install must leave it alone, which is why `install` checks
+        // `has` instead of calling `apply` unconditionally.
+        assert!(marker::has(&init, LUA_COMMENT, LABEL));
+        assert_eq!(std::fs::read_to_string(&init).unwrap(), mine);
+        assert!(mine.contains("\"space\""));
     }
 
     #[test]

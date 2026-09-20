@@ -34,8 +34,9 @@ Two files, both idempotent:
 | `~/.hammerspoon/aw.lua` | generated; overwritten on every re-install |
 | `~/.hammerspoon/init.lua` | gets a `--`-commented `aw` marker block that requires it |
 
-The hotkey lives in `init.lua`, not in the generated file, so rebinding it
-survives a re-install:
+The hotkey lives in `init.lua`, not in the generated file, and the block is
+written **once** — a re-install refreshes `aw.lua` but never rewrites an
+existing block, so a hotkey you rebound stays rebound:
 
 ```lua
 -- >>> aw hammerspoon >>>
@@ -44,7 +45,13 @@ aw.bind({ "cmd", "alt" }, "a") -- change the hotkey here; re-installing won't to
 -- <<< aw hammerspoon <<<
 ```
 
-After installing, reload Hammerspoon from its menubar icon.
+After installing, reload Hammerspoon from its menubar icon. Hammerspoon does
+not watch its config directory unless you tell it to, so the hotkey won't
+exist until that reload.
+
+Hammerspoon also needs macOS Accessibility permission to focus windows. If
+picking an agent switches the tmux pane but doesn't bring the window forward,
+grant it under System Settings → Privacy & Security → Accessibility.
 
 ## Recognising an already-open window
 
@@ -124,7 +131,9 @@ reference implementation, not the only possible client.
   with a bare `PATH`, and going through a login shell to fix that would pick up
   shell aliases — oh-my-zsh aliases `tmux` to a wrapper function that doesn't
   exist non-interactively.
-- Move or reinstall `aw` somewhere else and you'll want to re-run
-  `aw install hammerspoon` so the baked-in path follows.
+- Those paths are resolved from `PATH`, not from the running binary. Under
+  Homebrew the running binary lives at a version-pinned Cellar path that the
+  next `brew upgrade` deletes, while `/opt/homebrew/bin/aw` is a stable
+  symlink. Re-run `aw install hammerspoon` if you move `aw` somewhere new.
 - The picker filters on both lines as you type, so `team wait` narrows by
   workspace and status together.

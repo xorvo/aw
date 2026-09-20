@@ -23,6 +23,15 @@ pub fn close_marker(prefix: &str, label: &str) -> String {
     format!("{} <<< aw {} <<<", prefix, label)
 }
 
+/// Whether `path` already carries our block. Lets a caller treat its block as
+/// write-once — `apply` replaces the whole body, so anything the user edited
+/// inside it would otherwise be reverted on the next install.
+pub fn has(path: &Path, prefix: &str, label: &str) -> bool {
+    std::fs::read_to_string(path)
+        .map(|s| s.contains(&open_marker(prefix, label)))
+        .unwrap_or(false)
+}
+
 pub fn apply(path: &Path, prefix: &str, label: &str, body: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)

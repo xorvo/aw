@@ -258,8 +258,8 @@ let kbOpen=false;
 $('#kbBtn').addEventListener('pointerdown',e=>{ if(kbOpen) e.preventDefault(); }); // keep focus so we can blur
 $('#kbBtn').addEventListener('click',()=>{ if(!current) return; if(kbOpen) kbd.blur(); else kbd.focus(); });
 $('#term').addEventListener('click',()=>{ if(current) kbd.focus(); });
-kbd.addEventListener('focus',()=>{ kbOpen=true; $('#term').classList.add('live'); $('#kbBtn').classList.add('on'); checkWide(); setTimeout(fitViewport,60); });
-kbd.addEventListener('blur',()=>{ kbOpen=false; $('#term').classList.remove('live'); $('#kbBtn').classList.remove('on'); checkWide(); setTimeout(fitViewport,60); });
+kbd.addEventListener('focus',()=>{ kbOpen=true; $('#term').classList.add('live'); $('#kbBtn').classList.add('on'); $('#sheet').classList.add('typing'); checkWide(); setTimeout(fitViewport,60); });
+kbd.addEventListener('blur',()=>{ kbOpen=false; $('#term').classList.remove('live'); $('#kbBtn').classList.remove('on'); $('#sheet').classList.remove('typing'); checkWide(); setTimeout(fitViewport,60); });
 
 // ---- full-screen draft editor: IME-friendly local editing, per-session draft ----
 const draft=$<HTMLTextAreaElement>('#draft'), editor=$('#editor'), modeBtn=$('#modeBtn'), LS=window.localStorage;

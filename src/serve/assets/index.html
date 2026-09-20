@@ -96,6 +96,16 @@
     border:0; font-size:16px; caret-color:transparent; overflow:hidden; white-space:nowrap;
     outline:none; -webkit-user-modify:read-write-plaintext-only; }
   .term.live { box-shadow:inset 0 0 0 2px rgba(56,139,253,.45); }
+  /* With the soft keyboard up the viewport is roughly half height, and header
+     plus key bar were eating a third of it. Trim the chrome while typing —
+     every pixel reclaimed here is a line of output you can actually read.
+     Back stays reachable; only the status dot and the padding go. */
+  .sheet.typing header { padding-top:calc(5px + env(safe-area-inset-top)); padding-bottom:5px; }
+  .sheet.typing header h1 { font-size:13.5px; }
+  .sheet.typing header .dot { display:none; }
+  .sheet.typing .bar { padding-top:5px; padding-bottom:calc(5px + env(safe-area-inset-bottom)); }
+  .sheet.typing .keys button { padding-top:5px; padding-bottom:5px; }
+  .sheet.typing .keys button.icon { padding-top:4px; padding-bottom:4px; font-size:16px; }
   .toast { position:fixed; bottom:calc(20px + env(safe-area-inset-bottom)); left:50%; transform:translateX(-50%);
     background:#222b38; color:var(--fg); padding:9px 16px; border-radius:20px; font-size:13px; opacity:0;
     transition:opacity .2s; z-index:30; pointer-events:none; }

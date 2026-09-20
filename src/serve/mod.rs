@@ -26,7 +26,9 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use crate::dash::remote_link::DEFAULT_PORT;
 const PING_EVERY: Duration = Duration::from_secs(25);
 const EVENTS_POLL: Duration = Duration::from_millis(1500);
-const SCREEN_POLL: Duration = Duration::from_millis(150);
+// A pane capture costs ~9 ms, so this is a ~9% duty cycle and the stream still
+// only pushes when the content actually changed.
+const SCREEN_POLL: Duration = Duration::from_millis(100);
 const UPLOAD_MAX: usize = 25 * 1024 * 1024;
 
 const INDEX_HTML: &str = include_str!("assets/index.html");

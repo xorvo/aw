@@ -59,6 +59,40 @@ alerts.
 | ---------- | ------- | ------- |
 | `--port` / `AW_REMOTE_PORT`  | `7340`  | listen port |
 | `--host` / `AW_REMOTE_HOST`  | `0.0.0.0` | bind interface |
+
+## Running a second, isolated instance
+
+Useful for working on the web client without touching the instance you rely
+on. Nothing special is needed — point the three env vars somewhere else and
+pick another port:
+
+```bash
+AW_STATE_DIR=/tmp/aw-dev-state \
+AW_REMOTE_TOKEN=devtoken \
+  aw serve --port 7341
+```
+
+The two processes then share nothing but tmux itself, which they only read:
+
+| | your instance | the scratch one |
+|---|---|---|
+| port | 7340 | 7341 |
+| pane state + manifest | `~/.cache/aw` | `/tmp/aw-dev-state` |
+| token | `~/.cache/aw/remote-token` | `$AW_REMOTE_TOKEN` |
+
+A fresh `AW_STATE_DIR` starts with no pane state, so the list still shows every
+live session (names come from tmux) but without hook-derived status or prompts.
+Copy them in if you want realistic rendering — they are copies, so the scratch
+instance's own garbage collection can never reach your originals:
+
+```bash
+mkdir -p /tmp/aw-dev-state/panes
+cp ~/.cache/aw/panes/*.json /tmp/aw-dev-state/panes/
+```
+
+One caveat: the fit button and the key/paste endpoints act on **real** tmux
+panes whichever instance serves them, because tmux is the shared thing. A
+scratch instance is isolated for reading, not for writing.
 | `AW_REMOTE_TOKEN` | generated → `~/.cache/aw/remote-token` | fixed auth token |
 | `AW_FONT` | a Meslo/FiraCode Nerd Font in `~/Library/Fonts` | UI/terminal webfont served to the phone |
 

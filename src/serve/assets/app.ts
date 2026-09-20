@@ -16,7 +16,10 @@ interface Session {
   last_prompt: string;
   // added server-side on top of the dash snapshot:
   needsAttention: boolean;
-  ageSec: number;
+  /** The pane's own title (tmux window name / renamed agent session). */
+  name: string;
+  /** null when no hook has ever fired for this pane, so the age is unknown. */
+  ageSec: number | null;
 }
 
 interface KeysBody {
@@ -36,6 +39,19 @@ let lastScreen = '', scrInFlight = false;
 
 function toast(t: string){ const e=$('#toast'); e.textContent=t; e.classList.add('show'); setTimeout(()=>e.classList.remove('show'),1400); }
 function rel(s: number): string{ if(s<60)return s+'s'; if(s<3600)return Math.floor(s/60)+'m'; return Math.floor(s/3600)+'h'; }
+// `null` age = no hook has ever fired here. Subtracting from 0 would render
+// the age of the Unix epoch, which is where "497197h ago" came from.
+function relAgo(s: number | null): string{ return s==null ? '—' : rel(s)+' ago'; }
+// Headline: the pane's own title, as the desktop switcher shows it.
+function title(s: Session): string{ return s.name||s.workspace||s.pane_id; }
+// Byline: where it lives, what is driving it, how stale it is. The agent is
+// dropped when it just repeats the headline — for a pane no hook has fired in,
+// the dashboard falls back to using the tmux label as the agent name, so the
+// two are the same string and printing both looks like a bug.
+function subtitle(s: Session): string{
+  const parts=[s.workspace, s.agent===title(s)?'':s.agent, relAgo(s.ageSec)];
+  return parts.filter(Boolean).join(' · ');
+}
 
 function render(){
   const list=$('#list');
@@ -46,9 +62,9 @@ function render(){
     <div class="card ${s.needsAttention?'attn':''}" onclick="openSheet('${s.pane_id}')">
       <span class="dot ${s.status}"></span>
       <div class="meta">
-        <div class="name">${esc(s.workspace||s.pane_id)}
+        <div class="name"><span class="nm">${esc(title(s))}</span>
           <span class="badge ${s.needsAttention?'attn':''}">${s.needsAttention?'needs you':s.status}</span></div>
-        <div class="sub">${esc(s.agent)} · ${esc(s.last_event||'')} · ${rel(s.ageSec)} ago</div>
+        <div class="sub">${esc(subtitle(s))}</div>
         <div class="prompt">${esc(s.last_prompt||'')}</div>
       </div>
     </div>`).join('');
@@ -151,7 +167,7 @@ window.addEventListener('popstate', e=>{ const st=(e.state||{}) as {pane?: strin
 // under the reader is wrong anyway. Frames buffer (latest wins) and
 // flush ~200ms after the last scroll/touch event.
 let pendingScreen: string | null=null, userScrolling=false, progScroll=false;
-let scrollQuiet: number | undefined;
+let scrollQuiet: number | undefined, deferCap: number | undefined, lastTop=0;
 function applyScreen(screen: string){
   if(userScrolling){ pendingScreen=screen; return; }
   pendingScreen=null;
@@ -159,21 +175,40 @@ function applyScreen(screen: string){
   lastScreen=screen;
   const t=$('#term'); const atBottom=t.scrollHeight-t.scrollTop-t.clientHeight<40;
   t.innerHTML=ansiToHtml(screen);
+  checkWide();
   if(atBottom){
     progScroll=true;                       // our own scrollTop write fires 'scroll'
     t.scrollTop=t.scrollHeight;
     requestAnimationFrame(()=>{ progScroll=false; });
   }
 }
-function noteUserScroll(){
-  if(progScroll) return;                   // auto-follow isn't user scrolling
+function flushDeferred(){
+  clearTimeout(scrollQuiet); clearTimeout(deferCap);
+  scrollQuiet=deferCap=undefined;
+  userScrolling=false;
+  if(pendingScreen!==null){ const s=pendingScreen; pendingScreen=null; applyScreen(s); }
+}
+function deferScreens(){
   userScrolling=true;
   clearTimeout(scrollQuiet);
-  scrollQuiet=setTimeout(()=>{ userScrolling=false;
-    if(pendingScreen!==null){ const s=pendingScreen; pendingScreen=null; applyScreen(s); } },200);
+  scrollQuiet=setTimeout(flushDeferred,200);
+  // Momentum scrolling fires 'scroll' continuously, which would push the quiet
+  // timer out for the whole glide and leave stale text on screen the entire
+  // time. Cap how long updates can ever be held back.
+  if(deferCap===undefined) deferCap=setTimeout(flushDeferred,450);
 }
-$('#term').addEventListener('scroll',noteUserScroll,{passive:true});
-$('#term').addEventListener('touchstart',noteUserScroll,{passive:true});
+function onTermScroll(){
+  if(progScroll) return;                   // auto-follow isn't user scrolling
+  const t=$('#term'), top=t.scrollTop, vertical=top!==lastTop;
+  lastTop=top;
+  // Panning sideways doesn't move the reader's line, and the iOS tile tearing
+  // this guard exists for is vertical. Keep painting during a horizontal swipe
+  // — a pane wider than the phone is exactly when you need live output.
+  if(!vertical){ flushDeferred(); return; }
+  deferScreens();
+}
+$('#term').addEventListener('scroll',onTermScroll,{passive:true});
+$('#term').addEventListener('touchstart',deferScreens,{passive:true});
 // live screen over SSE: server pushes only when the pane content changes
 let screenES: EventSource | null=null;
 function openScreenStream(pane: string){
@@ -273,10 +308,31 @@ async function applyFit(){ if(!fitMode||!current) return;
 async function unfit(pane: string | null){ lastFit=''; if(!pane) return;
   try{ await fetch('/api/unfit',{method:'POST',headers:{'content-type':'application/json'},
     body:JSON.stringify({pane})}); }catch{} }
-$('#fitBtn').addEventListener('click',()=>{ if(!current) return;
+function toggleFit(){ if(!current) return;
   fitMode=!fitMode; LS.setItem('aw:fit',fitMode?'1':'0'); $('#fitBtn').classList.toggle('on',fitMode);
   if(fitMode){ applyFit(); toast('fit to screen — note: also resizes on your Mac'); }
-  else { unfit(current); toast('size restored'); } });
+  else { unfit(current); toast('size restored'); }
+  checkWide(); }
+$('#fitBtn').addEventListener('click',toggleFit);
+
+// ---- "this pane is far wider than your phone" nudge ----
+// Fit stays off by default because it also shrinks the window on the Mac, so
+// the discoverable thing is a hint rather than a silent resize.
+const WIDE_RATIO=1.3;
+let wideOff=LS.getItem('aw:wideHintOff')==='1';
+function checkWide(){
+  const hint=$('#wideHint'), t=$('#term');
+  const ratio=t.scrollWidth/Math.max(1,t.clientWidth);
+  const show=!!current && !fitMode && !wideOff && ratio>=WIDE_RATIO;
+  if(show){
+    const r=ratio>=10?Math.round(ratio):Math.round(ratio*10)/10;
+    $('#wideHintText').textContent=r+'× wider than your screen.';
+  }
+  hint.hidden=!show;
+}
+$('#wideHintFit').addEventListener('click',()=>{ if(!fitMode) toggleFit(); });
+$('#wideHintX').addEventListener('click',()=>{
+  wideOff=true; LS.setItem('aw:wideHintOff','1'); checkWide(); toast('hint hidden'); });
 addEventListener('orientationchange',()=>{ if(fitMode&&current) setTimeout(applyFit,350); });
 // restore on background/close so the Mac window is never stuck small...
 addEventListener('pagehide',()=>{ if(fitMode&&current)

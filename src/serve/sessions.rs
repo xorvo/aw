@@ -20,10 +20,20 @@ pub fn sessions_value() -> Result<serde_json::Value> {
     let mut entries: Vec<(bool, u64, serde_json::Value)> = Vec::with_capacity(snap.entries.len());
     for p in &snap.entries {
         let needs_attention = p.status == Status::Waiting;
-        let age_sec = now.saturating_sub(p.last_activity);
         let mut v = serde_json::to_value(p)?;
         v["needsAttention"] = needs_attention.into();
-        v["ageSec"] = age_sec.into();
+        // `PaneState` skips `label` when serializing (it is recomputed from
+        // tmux on every load), so the pane's own title has to be added here.
+        // Shared with `aw switch` so every surface names a pane the same way.
+        v["name"] = crate::dash::tui::switch::card_name(p).into();
+        // `last_activity == 0` means no hook ever fired for this pane. Left as
+        // a subtraction it renders as the age of the Unix epoch — the
+        // "497197h ago" rows. Null so the client can say it doesn't know.
+        v["ageSec"] = if p.last_activity == 0 {
+            serde_json::Value::Null
+        } else {
+            now.saturating_sub(p.last_activity).into()
+        };
         entries.push((needs_attention, p.last_activity, v));
     }
     // waiting first, then most recently active
@@ -89,6 +99,28 @@ mod tests {
         assert_eq!(order, vec!["%2", "%3", "%1"], "waiting first, then recency");
     }
 
+    /// The epoch-age bug: a pane no hook has fired in must not report an age.
+    #[test]
+    fn never_active_pane_reports_unknown_age() {
+        let mut p = pane("%9", Status::Idle, 0);
+        p.last_activity = 0;
+        let now = 1_800_000_000u64;
+        let age = if p.last_activity == 0 {
+            serde_json::Value::Null
+        } else {
+            now.saturating_sub(p.last_activity).into()
+        };
+        assert_eq!(age, serde_json::Value::Null, "0 must not become ~56 years");
+
+        p.last_activity = now - 90;
+        let age2 = if p.last_activity == 0 {
+            serde_json::Value::Null
+        } else {
+            now.saturating_sub(p.last_activity).into()
+        };
+        assert_eq!(age2, serde_json::json!(90));
+    }
+
     #[test]
     fn session_value_carries_added_fields() {
         let p = pane("%9", Status::Waiting, 0);
@@ -99,7 +131,7 @@ mod tests {
         assert_eq!(v["ageSec"], serde_json::json!(5));
         assert_eq!(v["pane_id"], serde_json::json!("%9"));
         // Fields the phone client reads must exist in the serialized shape.
-        for key in ["workspace", "agent", "status", "last_event", "last_prompt"] {
+        for key in ["workspace", "agent", "status", "last_event", "last_prompt", "pane_id"] {
             assert!(v.get(key).is_some(), "missing {}", key);
         }
     }

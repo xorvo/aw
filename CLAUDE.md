@@ -19,6 +19,7 @@ The CLI is a Rust binary (`src/`). Key modules:
 - **src/dash/tui/switch.rs** — `aw switch`, the pane-centric quick switcher
 - **src/shell/** — `shell-init`, completions, workspace detection
 - **src/install/** — `aw install …` (shell rc, agent hooks, tmux bindings)
+- **src/install/hammerspoon.rs** — optional macOS menu selector (docs/hammerspoon.md)
 - **src/hook.rs** — `aw hook` (agent state writer, called from agent hooks)
 - **src/config.rs** — `config.yaml` parser (serde_yaml; no `yq` at runtime)
 - **src/paths.rs**, **src/git.rs**, **src/self_update.rs**

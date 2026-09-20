@@ -16,7 +16,7 @@ pub fn install(shell: ShellKind) -> Result<()> {
         ShellKind::Fish => (home.join(".config/fish/config.fish"), "fish"),
     };
     let body = format!("eval \"$(aw shell-init {})\"", name);
-    marker::apply(&rc, "shell-init", &body)?;
+    marker::apply(&rc, "#", "shell-init", &body)?;
     println!("✅ Shell hook installed in {}", rc.display());
     println!("   Open a new shell or run: source {}", rc.display());
     Ok(())

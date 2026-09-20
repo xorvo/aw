@@ -32,6 +32,8 @@ use ratatui::{
     Frame, Terminal,
 };
 
+use serde::Serialize;
+
 use crate::dash::render::{humanize_age, status_glyph};
 use crate::dash::state::{PaneState, Snapshot, Status};
 use crate::dash::tmux;
@@ -364,10 +366,7 @@ fn card_lines(
         Status::Idle => Style::default().fg(Color::Green),
     };
 
-    // `label` is refreshed from tmux every load, so a `/rename`'d Claude
-    // session shows its chosen name; fall back to the agent when tmux is
-    // unreachable and the row came from a state file alone.
-    let name = if p.label.is_empty() { p.agent.as_str() } else { p.label.as_str() };
+    let name = card_name(p);
     let headline = Line::from(vec![
         Span::styled(
             hotkey,
@@ -474,6 +473,67 @@ fn pad(s: &str, cols: usize) -> String {
     let mut out = s.to_string();
     out.push_str(&" ".repeat(cols - len));
     out
+}
+
+/// The card's headline: the tmux-derived pane name, falling back to the agent
+/// when tmux is unreachable and the row came from a state file alone.
+///
+/// `label` is refreshed from tmux on every load, so a `/rename`'d Claude
+/// session shows the name it chose. One function so the TUI and
+/// `aw switch --json` can never disagree about what a pane is called.
+pub fn card_name(p: &PaneState) -> &str {
+    if p.label.is_empty() {
+        p.agent.as_str()
+    } else {
+        p.label.as_str()
+    }
+}
+
+/// One row of `aw switch --json`, for external selectors (the Hammerspoon
+/// menu).
+///
+/// `PaneState` can't be serialized directly for this: its `label`, `parked`
+/// and `pinned` fields are `#[serde(skip)]` because they are recomputed from
+/// tmux on every load, so the pane name would come out empty.
+#[derive(Debug, Serialize)]
+pub struct Entry {
+    pub pane_id: String,
+    /// tmux session (`aw-<workspace>`). With `set-titles-string "#S"` this is
+    /// also the terminal window title, which is how a GUI caller finds the
+    /// window hosting it.
+    pub session: String,
+    pub workspace: String,
+    pub agent: String,
+    /// Pane name as the card shows it.
+    pub name: String,
+    pub status: Status,
+    pub last_activity: u64,
+    /// Seconds since the last agent event, so a caller need not share our clock.
+    pub age_secs: u64,
+    /// The same short string the cards print ("2m", "16h").
+    pub age: String,
+}
+
+/// `aw switch --json` — the switcher's list as JSON, same filter and order.
+pub fn cmd_json() -> Result<()> {
+    let snap = Snapshot::load()?;
+    let now = crate::dash::state::now_epoch();
+    let rows: Vec<Entry> = active_panes(&snap.entries, now)
+        .iter()
+        .map(|p| Entry {
+            pane_id: p.pane_id.clone(),
+            session: p.session.clone(),
+            workspace: p.workspace.clone(),
+            agent: p.agent.clone(),
+            name: card_name(p).to_string(),
+            status: p.status,
+            last_activity: p.last_activity,
+            age_secs: now.saturating_sub(p.last_activity),
+            age: humanize_age(p.last_activity),
+        })
+        .collect();
+    println!("{}", serde_json::to_string_pretty(&rows)?);
+    Ok(())
 }
 
 #[cfg(test)]

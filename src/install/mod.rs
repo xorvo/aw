@@ -13,6 +13,7 @@ use crate::cli::{AgentKind, InstallCmd, ShellKind};
 
 pub mod claude;
 pub mod codex;
+pub mod hammerspoon;
 pub mod marker;
 pub mod pi;
 pub mod service;
@@ -29,6 +30,13 @@ pub fn run(cmd: InstallCmd) -> Result<()> {
                 service::uninstall()
             } else {
                 service::install(host.as_deref(), port)
+            }
+        }
+        InstallCmd::Hammerspoon { uninstall } => {
+            if uninstall {
+                hammerspoon::uninstall()
+            } else {
+                hammerspoon::install()
             }
         }
         InstallCmd::All => run_all(),
@@ -77,6 +85,17 @@ fn run_all() -> Result<()> {
     println!();
     println!("→ Phone remote (aw serve at login)");
     let _ = service::install(None, None);
+    println!();
+    // Optional integration: pointless without both apps, so don't nag users
+    // who have neither. `aw install hammerspoon` is the explicit opt-in and
+    // skips this check.
+    if hammerspoon::available() {
+        println!("→ Hammerspoon menu selector");
+        let _ = hammerspoon::install();
+    } else {
+        println!("→ Hammerspoon menu selector — skipped (needs Hammerspoon + Ghostty)");
+        println!("   Install it anyway with: aw install hammerspoon");
+    }
     println!();
     println!("✅ Done. You may need to restart your shell.");
     Ok(())

@@ -90,7 +90,7 @@ pub fn install(override_path: Option<&Path>) -> Result<()> {
     }
     println!();
 
-    marker::apply(&target, LABEL, TMUX_BLOCK)?;
+    marker::apply(&target, "#", LABEL, TMUX_BLOCK)?;
     println!("✅ Tmux bindings written to {}", target.display());
 
     // Strip our block from any *other* candidate that exists, so we don't
@@ -99,7 +99,7 @@ pub fn install(override_path: Option<&Path>) -> Result<()> {
         if c.path == target || !c.exists {
             continue;
         }
-        if marker::remove(&c.path, LABEL).unwrap_or(false) {
+        if marker::remove(&c.path, "#", LABEL).unwrap_or(false) {
             println!("ℹ️  Removed stale block from {}", c.path.display());
         }
     }

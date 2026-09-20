@@ -112,6 +112,10 @@ One card per **pane**, newest activity first. Cards have no borders — the
 hierarchy is typographic: bold pane name, dim agent, accent-coloured
 workspace, status glyph in the usual working/waiting/idle colours.
 
+`aw switch --json` prints the same list as data, for external selectors —
+see [hammerspoon.md](hammerspoon.md) for an optional system-wide picker built
+on it.
+
 | Key | Does |
 |---|---|
 | `1`–`9` | jump straight to that card |

@@ -71,7 +71,11 @@ pub enum Cmd {
     Snapshot,
 
     /// Jump between agents that were active in the last 24 hours
-    Switch,
+    Switch {
+        /// Print the list as JSON instead of opening the picker
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Tmux-based dashboard for live agent state
     Dash {
@@ -214,6 +218,14 @@ pub enum InstallCmd {
         /// Listen port for the daemon (default: 7340)
         #[arg(long)]
         port: Option<u16>,
+    },
+    /// Install the optional Hammerspoon + Ghostty menu selector (macOS).
+    /// `aw install all` only does this when both apps are present; asking
+    /// for it directly installs regardless.
+    Hammerspoon {
+        /// Remove it instead of installing
+        #[arg(long)]
+        uninstall: bool,
     },
     /// Run shell + hooks + tmux-bindings + serve-at-login interactively
     All,

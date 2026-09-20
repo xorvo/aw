@@ -320,3 +320,53 @@ fn install_all_runs_every_step() {
     assert!(env.home.join(".codex/hooks.json").is_file());
     assert!(env.home.join(".pi/agent/extensions/aw-dash/index.ts").is_file());
 }
+
+// ---- hammerspoon menu selector (optional integration) ----
+
+#[test]
+fn install_hammerspoon_writes_lua_and_requires_it() {
+    let env = TestEnv::new();
+    let hs = env.home.join(".hammerspoon");
+    std::fs::create_dir_all(&hs).unwrap();
+    std::fs::write(hs.join("init.lua"), "hs.alert.show(\"mine\")\n").unwrap();
+
+    let cap = capture(&env, &env.run(&["install", "hammerspoon"]));
+    assert_eq!(cap.exit, 0, "{}", cap.stderr);
+
+    let lua = std::fs::read_to_string(hs.join("aw.lua")).unwrap();
+    assert!(lua.contains("switch --json"), "the data contract: {}", lua);
+    assert!(!lua.contains("@AW@"), "path placeholder left unsubstituted");
+    assert!(!lua.contains("@TMUX@"), "path placeholder left unsubstituted");
+
+    let init = std::fs::read_to_string(hs.join("init.lua")).unwrap();
+    // Lua comments, not `#` — a shell-style marker would be a syntax error.
+    assert!(init.contains("-- >>> aw hammerspoon >>>"), "{}", init);
+    assert!(!init.contains("# >>> aw"), "{}", init);
+    assert!(init.contains("require(\"aw\")"), "{}", init);
+    assert!(init.contains("hs.alert.show(\"mine\")"), "clobbered the user's config");
+
+    // Re-install must not churn the file.
+    let before = init;
+    assert_eq!(capture(&env, &env.run(&["install", "hammerspoon"])).exit, 0);
+    assert_eq!(
+        before,
+        std::fs::read_to_string(hs.join("init.lua")).unwrap(),
+        "re-install rewrote init.lua"
+    );
+}
+
+#[test]
+fn install_hammerspoon_uninstall_leaves_user_config() {
+    let env = TestEnv::new();
+    let hs = env.home.join(".hammerspoon");
+    std::fs::create_dir_all(&hs).unwrap();
+    std::fs::write(hs.join("init.lua"), "hs.alert.show(\"mine\")\n").unwrap();
+    assert_eq!(capture(&env, &env.run(&["install", "hammerspoon"])).exit, 0);
+
+    let cap = capture(&env, &env.run(&["install", "hammerspoon", "--uninstall"]));
+    assert_eq!(cap.exit, 0, "{}", cap.stderr);
+    assert!(!hs.join("aw.lua").exists(), "generated file left behind");
+    let init = std::fs::read_to_string(hs.join("init.lua")).unwrap();
+    assert!(!init.contains("require(\"aw\")"), "{}", init);
+    assert!(init.contains("hs.alert.show(\"mine\")"), "removed the user's own config");
+}

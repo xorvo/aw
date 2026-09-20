@@ -32,7 +32,13 @@ fn main() -> Result<()> {
         Cmd::Resurrect { dry_run } => workspace::resurrect::run(dry_run),
         Cmd::Snapshot => workspace::resurrect::snapshot(),
 
-        Cmd::Switch => dash::tui::switch::run(),
+        Cmd::Switch { json } => {
+            if json {
+                dash::tui::switch::cmd_json()
+            } else {
+                dash::tui::switch::run()
+            }
+        }
         Cmd::Dash { command, filter } => match command {
             None => dash::tui::run_popup(filter),
             Some(DashCmd::Sidebar) => dash::tui::run_sidebar(),

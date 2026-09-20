@@ -88,6 +88,20 @@ This is also why opening a plain tmux session after a reboot doesn't erase
 your recovery state: the new server's pid doesn't match, so the records are
 left alone until you resurrect.
 
+## What the dashboard shows afterwards
+
+Pane state files (`~/.cache/aw/panes/*.json`) are keyed by tmux pane id, so
+they die with the server and the dash garbage-collects them on its next
+tick. To stop a restored agent from showing up with no history at all,
+resurrect seeds a state file for each pane it creates, carrying the agent,
+conversation id, and the **original pane's last-activity time** over from
+the manifest. A session you last touched three days ago still reads `3d`
+after a restore, not "just now".
+
+Status resets to `idle`, and last event / last prompt come back empty — the
+manifest never recorded those. The agent's first hook after the restore
+fills them in.
+
 ## What is *not* restored
 
 Window layouts, scrollback, shell history, and processes other than the

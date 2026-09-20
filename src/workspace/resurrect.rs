@@ -27,6 +27,11 @@ pub struct RestorePane {
     pub agent: String,
     pub cwd: String,
     pub session_id: String,
+    /// When the *original* pane last saw agent activity. Carried through so
+    /// the restored pane's dash row reports the real age instead of starting
+    /// over at "just now" (or at "—", which is what an absent state file
+    /// gets). Not part of the dedupe key.
+    pub last_activity: u64,
 }
 
 impl RestorePane {
@@ -112,8 +117,16 @@ fn dedupe_panes(rec: &SessionRecord) -> Vec<RestorePane> {
             agent: p.agent.clone(),
             cwd,
             session_id: p.session_id.clone(),
+            last_activity: p.last_activity,
         };
-        if !out.contains(&candidate) {
+        // Dedupe on the (agent, cwd, session_id) triple only. Panes are
+        // sorted newest-first, so the survivor carries the newest timestamp.
+        let dup = out.iter().any(|o| {
+            o.agent == candidate.agent
+                && o.cwd == candidate.cwd
+                && o.session_id == candidate.session_id
+        });
+        if !dup {
             out.push(candidate);
         }
     }
@@ -243,9 +256,38 @@ fn restore_session(r: &RestoreSession, config: &Config) -> Result<Vec<(String, R
             tmux_out(&["send-keys", "-t", &pane_id, "-l", "--", &cmd])?;
             tmux_out(&["send-keys", "-t", &pane_id, "Enter"])?;
         }
+        // Give the dashboard something to show before the resumed agent
+        // fires its first hook: without a state file the row reads "—" for
+        // last activity, and the pane's real age is lost to the restart.
+        // Cosmetic, so a failed write must not fail an otherwise good
+        // restore.
+        let st = seeded_pane_state(&r.session, &pane_id, p);
+        let _ = crate::dash::state::pane_state_path(&pane_id)
+            .and_then(|path| st.write_atomic(&path));
+
         out.push((pane_id, p.clone()));
     }
     Ok(out)
+}
+
+/// The state file a restored pane starts life with: hook-derived identity
+/// from the manifest, `last_activity` from the *original* pane, and no
+/// status/event/prompt history (the manifest never recorded those).
+///
+/// `session`, `workspace` and `cwd` are refreshed from tmux on every dash
+/// load, so they are filled for completeness rather than correctness.
+fn seeded_pane_state(
+    session: &str,
+    pane_id: &str,
+    p: &RestorePane,
+) -> crate::dash::state::PaneState {
+    let mut st = crate::dash::state::PaneState::new(pane_id, &p.agent);
+    st.session = session.to_string();
+    st.workspace = session.trim_start_matches("aw-").to_string();
+    st.cwd = p.cwd.clone();
+    st.session_id = p.session_id.clone();
+    st.last_activity = p.last_activity;
+    st
 }
 
 /// Agent binaries we recognize in `pane_current_command` when no hook state
@@ -441,6 +483,7 @@ mod tests {
             agent: "claude".into(),
             cwd: "/ws/crashed".into(),
             session_id: "sid-1".into(),
+            last_activity: 5,
         }]);
     }
 
@@ -501,6 +544,28 @@ mod tests {
     }
 
     #[test]
+    fn seeded_state_keeps_the_original_activity_stamp() {
+        let p = RestorePane {
+            agent: "claude".into(),
+            cwd: "/ws/w".into(),
+            session_id: "sid-1".into(),
+            last_activity: 1_700_000_000,
+        };
+        let st = seeded_pane_state("aw-w", "%9", &p);
+        assert_eq!(st.pane_id, "%9");
+        assert_eq!(st.session, "aw-w");
+        assert_eq!(st.workspace, "w");
+        assert_eq!(st.agent, "claude");
+        assert_eq!(st.cwd, "/ws/w");
+        assert_eq!(st.session_id, "sid-1");
+        // The whole point: not `now`.
+        assert_eq!(st.last_activity, 1_700_000_000);
+        assert_eq!(st.status, crate::dash::state::Status::Idle);
+        assert!(st.last_event.is_empty());
+        assert!(st.last_prompt.is_empty());
+    }
+
+    #[test]
     fn manifest_hints_only_from_live_server_and_agent_panes() {
         let m = manifest(vec![
             // Same server: a resurrected claude nobody typed into yet.
@@ -542,11 +607,13 @@ mod tests {
             ],
         );
         let panes = dedupe_panes(&r);
+        // The surviving id-less claude carries %2's timestamp (20) — the
+        // newest of the three that collapsed (%1=10, %2=20, %4=5).
         assert_eq!(panes, vec![
-            RestorePane { agent: "claude".into(), cwd: "/ws/w".into(), session_id: "sid-a".into() },
-            RestorePane { agent: "claude".into(), cwd: "/ws/w".into(), session_id: "sid-b".into() },
-            RestorePane { agent: "claude".into(), cwd: "/ws/w".into(), session_id: "".into() },
-            RestorePane { agent: "codex".into(), cwd: "/ws/w".into(), session_id: "".into() },
+            RestorePane { agent: "claude".into(), cwd: "/ws/w".into(), session_id: "sid-a".into(), last_activity: 40 },
+            RestorePane { agent: "claude".into(), cwd: "/ws/w".into(), session_id: "sid-b".into(), last_activity: 30 },
+            RestorePane { agent: "claude".into(), cwd: "/ws/w".into(), session_id: "".into(), last_activity: 20 },
+            RestorePane { agent: "codex".into(), cwd: "/ws/w".into(), session_id: "".into(), last_activity: 15 },
         ]);
     }
 }

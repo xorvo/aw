@@ -264,6 +264,10 @@ fn restore_session(r: &RestoreSession, config: &Config) -> Result<Vec<(String, R
         let st = seeded_pane_state(&r.session, &pane_id, p);
         let _ = crate::dash::state::pane_state_path(&pane_id)
             .and_then(|path| st.write_atomic(&path));
+        // The whole point of stamping here: a resumed agent fires no hook until
+        // someone types in it, so without this the pane is anonymous to any
+        // tmux binding that wants to know which conversation it holds.
+        crate::dash::tmux::stamp_pane(&pane_id, &p.agent, &p.session_id);
 
         out.push((pane_id, p.clone()));
     }

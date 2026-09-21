@@ -50,6 +50,34 @@ records:
 Unknown events are silent no-ops — a misconfigured hook can never break the
 agent.
 
+## Pane options (for tmux-side tooling)
+
+`aw` stamps two pane-local tmux options on every agent pane it knows about:
+
+| Option | Meaning |
+|---|---|
+| `@aw_agent` | `claude`, `codex`, … |
+| `@aw_session_id` | the agent's conversation id, when one is known |
+
+```bash
+tmux show-options -p -t "$pane" -v @aw_session_id
+```
+
+They exist so a key binding or status format can ask "what is in this pane?"
+without knowing anything about the cache layout below. They are written by
+`aw hook` on every event that carries a conversation id, and by `aw resurrect`
+when it recreates a pane — which is the case that matters, because a resumed
+agent fires no hook until somebody types in it, leaving the pane anonymous to
+hook-driven tooling until then.
+
+Deliberately namespaced. `aw` does not write `@claude_session_id`: resuming a
+conversation makes Claude mint a fresh id, so Claude's own `SessionStart` hook
+is the authority on the current one and ours would be stale. If you read both,
+prefer that one and fall back to `@aw_session_id`.
+
+Empty values are never written — a pane with no conversation id yet gets
+`@aw_agent` only.
+
 ## State files
 
 State lives at `~/.cache/aw/panes/<pane_id>.json` (overridable via

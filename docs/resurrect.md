@@ -102,6 +102,10 @@ Status resets to `idle`, and last event / last prompt come back empty — the
 manifest never recorded those. The agent's first hook after the restore
 fills them in.
 
+Restored panes are also stamped with `@aw_agent` and `@aw_session_id` (see
+[dash.md](dash.md)), so tmux bindings that act on "the agent in this pane" work
+immediately rather than only after you have typed in it.
+
 ## What is *not* restored
 
 Window layouts, scrollback, shell history, and processes other than the

@@ -105,6 +105,10 @@ pub fn run(agent: AgentKind, event: &str, prompt: Option<String>) -> Result<()> 
         &state.session_id,
     );
 
+    // Also stamp the pane itself, so tmux-side tooling can read what is running
+    // here without knowing about our cache.
+    tmux::stamp_pane(&pane_id, agent_name, &state.session_id);
+
     // Fire a notification on transition into `waiting`. Cheap and per-event;
     // we don't try to dedupe.
     if matches!(status, Status::Waiting) {

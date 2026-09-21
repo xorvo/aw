@@ -20,6 +20,48 @@ pub(crate) fn tmux_command() -> Command {
     cmd
 }
 
+/// Record what an agent pane is running *onto the pane*, as tmux options.
+///
+/// Our state files already hold this, but reading them means knowing `aw`'s
+/// cache layout. tmux options are where other tmux tooling naturally looks —
+/// a "fork this session" key binding, a status-line format — and they are
+/// available the moment the pane exists, with no hook needing to have fired.
+/// That gap is real: a session restored by `aw resurrect` is invisible to
+/// hook-driven tooling until someone types in it.
+///
+/// Namespaced `@aw_*` so we never write an option another tool owns. In
+/// particular we do *not* touch `@claude_session_id`: when Claude resumes a
+/// conversation it mints a fresh id, so its own hook is the authority on the
+/// current one and ours would be stale.
+///
+/// Best effort — the pane may be gone, and this is metadata, not state.
+pub fn stamp_pane(pane_id: &str, agent: &str, session_id: &str) {
+    if pane_id.is_empty() {
+        return;
+    }
+    for (name, value) in pane_stamps(agent, session_id) {
+        let _ = tmux_command()
+            .args(["set-option", "-p", "-t", pane_id, name, &value])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+/// Options to set for a pane. Pure, so the "skip what we don't know" rule is
+/// testable without a tmux server: writing an empty value would claim we know
+/// the pane runs an unnamed agent with no conversation.
+pub(crate) fn pane_stamps(agent: &str, session_id: &str) -> Vec<(&'static str, String)> {
+    let mut out = Vec::new();
+    if !agent.is_empty() {
+        out.push(("@aw_agent", agent.to_string()));
+    }
+    if !session_id.is_empty() {
+        out.push(("@aw_session_id", session_id.to_string()));
+    }
+    out
+}
+
 /// Where Homebrew and friends put tmux. Probed when PATH doesn't have it.
 const TMUX_CANDIDATES: &[&str] = &[
     "/opt/homebrew/bin/tmux",
@@ -328,6 +370,18 @@ mod tests {
     use super::*;
 
     use std::path::Path;
+
+    #[test]
+    fn pane_stamps_skip_what_we_do_not_know() {
+        assert_eq!(
+            pane_stamps("claude", "sid-1"),
+            vec![("@aw_agent", "claude".to_string()), ("@aw_session_id", "sid-1".to_string())]
+        );
+        // A pane with no conversation id yet still says which agent it runs.
+        assert_eq!(pane_stamps("codex", ""), vec![("@aw_agent", "codex".to_string())]);
+        // And a shell claims nothing at all.
+        assert!(pane_stamps("", "").is_empty());
+    }
 
     #[test]
     fn pick_tmux_prefers_path_then_known_prefixes() {

@@ -743,6 +743,7 @@ mod tests {
             parked: false,
             label: String::new(),
             pinned: false,
+            agent_known: true,
         }
     }
 

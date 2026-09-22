@@ -220,6 +220,13 @@ pub struct PaneInfo {
     pub pane_title: String,
     pub command: String,
     pub path: String,
+    /// `@aw_agent` — what we stamped on this pane. The only agent signal that
+    /// exists for a pane no hook has fired in yet, and the one that matters:
+    /// `pane_current_command` is useless for Claude's native binary, which
+    /// reports its version string.
+    pub aw_agent: String,
+    /// `@aw_session_id` — the conversation the pane holds, when known.
+    pub aw_session_id: String,
 }
 
 /// Result of asking tmux for the live pane list. The distinction between
@@ -246,8 +253,11 @@ pub fn list_panes_with_metadata() -> PaneListing {
             "list-panes",
             "-a",
             "-F",
-            // 6 tab-separated fields. Tabs don't appear in any of these.
-            "#{pane_id}\t#{session_name}\t#{window_name}\t#{pane_title}\t#{pane_current_command}\t#{pane_current_path}",
+            // 8 tab-separated fields. Tabs don't appear in any of these.
+            // The trailing two are our own pane options; tmux renders an
+            // unset option as the empty string, so old panes just come back
+            // blank rather than breaking the parse.
+            "#{pane_id}\t#{session_name}\t#{window_name}\t#{pane_title}\t#{pane_current_command}\t#{pane_current_path}\t#{@aw_agent}\t#{@aw_session_id}",
         ])
         .stderr(Stdio::null())
         .output();
@@ -267,8 +277,10 @@ pub fn list_panes_with_metadata() -> PaneListing {
 }
 
 fn parse_pane_line(line: &str) -> Option<PaneInfo> {
-    let parts: Vec<&str> = line.splitn(6, '\t').collect();
-    if parts.len() != 6 {
+    let parts: Vec<&str> = line.splitn(8, '\t').collect();
+    // The last field is a path, which can itself contain no tabs, so a short
+    // line means a tmux too old to know our options — still worth parsing.
+    if parts.len() < 6 {
         return None;
     }
     Some(PaneInfo {
@@ -278,6 +290,8 @@ fn parse_pane_line(line: &str) -> Option<PaneInfo> {
         pane_title: parts[3].into(),
         command: parts[4].into(),
         path: parts[5].into(),
+        aw_agent: parts.get(6).copied().unwrap_or_default().into(),
+        aw_session_id: parts.get(7).copied().unwrap_or_default().into(),
     })
 }
 

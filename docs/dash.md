@@ -153,12 +153,15 @@ on it.
 
 What it shows, and what it deliberately doesn't:
 
-- **Only panes with agent activity in the last 24 hours.** A rolling window,
-  not "since local midnight" — `aw` carries no date library, and a calendar
-  cut-off would blank the view at 00:05 for work done at 23:50.
-- **Only panes a hook has fired in.** Activity times come from the pane state
-  files, so a session you resurrected but haven't typed in yet won't appear
-  until its agent reports an event. `aw dash` still lists it.
+- **Every live agent pane**, with the most recently active first. A pane we
+  know has been quiet for more than 24 hours drops off; a pane with no recorded
+  activity at all does not, because unknown is not the same as old. That second
+  case is the norm straight after `aw resurrect`, and hiding those was a bug —
+  they are exactly the sessions you want to get back to.
+- **Agent panes only.** A pane counts when we know its agent: from hook state,
+  from the `@aw_agent` stamp, or from the manifest's record for it under this
+  server. The tmux label is not enough to go on — a shell would look like an
+  agent called "zsh", and an un-hooked Claude pane like one called "2.1.278".
 - **Parked panes never appear** — parking is "set this aside", the opposite of
   a jump target.
 

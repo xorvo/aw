@@ -50,6 +50,16 @@ pub struct PaneState {
     /// Not persisted — the on-disk value would be stale by next load.
     #[serde(skip)]
     pub label: String,
+    /// Whether we actually know which agent runs here, as opposed to having
+    /// guessed from the tmux label.
+    ///
+    /// `agent` is filled from the label for a pane no hook has fired in, so it
+    /// is never empty and can't be used to tell an agent from a plain shell —
+    /// a shell would claim to be an agent named "zsh". This flag is true only
+    /// when a hook told us, or when the pane carries our `@aw_agent` stamp.
+    /// Not persisted; recomputed on every load.
+    #[serde(skip)]
+    pub agent_known: bool,
     /// True iff `pinned/<workspace>` sentinel exists. Workspace-level pin
     /// (every pane in the same workspace shares the same value). Not
     /// persisted on the pane; we read the sentinel directory on load.
@@ -74,6 +84,7 @@ impl PaneState {
             parked: false,
             label: String::new(),
             pinned: false,
+            agent_known: !agent.is_empty(),
         }
     }
 
@@ -187,6 +198,15 @@ impl Snapshot {
             crate::dash::tmux::PaneListing::Tmux(panes) => {
                 let live_ids: std::collections::HashSet<String> =
                     panes.iter().map(|p| p.pane_id.clone()).collect();
+                // Third source for "which agent is this?", after hook state and
+                // the `@aw_agent` stamp: what the manifest recorded for this
+                // pane under this same server. Covers panes that predate the
+                // stamping, which would otherwise be indistinguishable from
+                // plain shells and vanish from the switcher.
+                let hints = crate::manifest::agent_hints(
+                    &crate::manifest::SessionManifest::load(),
+                    crate::dash::tmux::server_pid(),
+                );
 
                 // (3) For every live pane in an aw-* session, build a row,
                 //     overlaying hook state when present. tmux fields
@@ -218,6 +238,7 @@ impl Snapshot {
                             s.parked = parked_now;
                             s.label = label;
                             s.pinned = pinned_now;
+                            s.agent_known = !s.agent.is_empty();
                             s
                         }
                         None => PaneState {
@@ -226,18 +247,26 @@ impl Snapshot {
                             session: tp.session.clone(),
                             workspace,
                             cwd: tp.path.clone(),
-                            // No hook fired in this pane yet, so we have
-                            // no agent-type signal — fall back to the
-                            // tmux label as the agent column too.
-                            agent: label.clone(),
+                            // No hook has fired here, so prefer what we
+                            // stamped on the pane (`@aw_agent`) over the tmux
+                            // label. The label is a last resort and a poor
+                            // one: Claude's native binary reports its version
+                            // string as the foreground command, so an
+                            // un-hooked claude pane would be named "2.1.278".
+                            agent: agent_for(tp, &hints).unwrap_or_else(|| label.clone()),
                             status: Status::Idle,
                             last_event: String::new(),
                             last_activity: 0,
                             last_prompt: String::new(),
-                            session_id: String::new(),
+                            session_id: if tp.aw_session_id.is_empty() {
+                                hints.get(&tp.pane_id).map(|(_, s)| s.clone()).unwrap_or_default()
+                            } else {
+                                tp.aw_session_id.clone()
+                            },
                             parked: parked_now,
                             label,
                             pinned: pinned_now,
+                            agent_known: agent_for(tp, &hints).is_some(),
                         },
                     };
                     entries.push(row);
@@ -285,6 +314,7 @@ impl Snapshot {
                 // Fall back to file-only. Don't auto-gc — without tmux's
                 // word we can't tell live from dead.
                 for (_, mut s) in hook_state.drain() {
+                    s.agent_known = !s.agent.is_empty();
                     if let Some(ref pdir) = parked_dir {
                         s.parked = pdir.join(&s.pane_id).exists();
                     }
@@ -342,6 +372,23 @@ impl Snapshot {
         }
         (w, wt, i)
     }
+}
+
+/// The agent running in a pane we have no hook state for, if we can know it.
+///
+/// `@aw_agent` first — we wrote it, so it is current. Then the manifest, which
+/// covers panes stamped by an older `aw`. `None` means genuinely unknown, and
+/// callers must not guess from the tmux label: a shell would claim to be an
+/// agent named "zsh", and an un-hooked Claude pane would be named after its
+/// version string.
+fn agent_for(
+    tp: &crate::dash::tmux::PaneInfo,
+    hints: &std::collections::BTreeMap<String, (String, String)>,
+) -> Option<String> {
+    if !tp.aw_agent.is_empty() {
+        return Some(tp.aw_agent.clone());
+    }
+    hints.get(&tp.pane_id).map(|(a, _)| a.clone())
 }
 
 /// Compute the dormant-workspace list: every on-disk workspace whose name

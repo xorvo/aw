@@ -165,6 +165,32 @@ pub fn record_pane(
     let _ = m.save();
 }
 
+/// `pane_id -> (agent, session_id)` for every agent pane recorded under the
+/// live server.
+///
+/// Pane ids are unique for one server lifetime, so same pid plus same id is the
+/// same pane. Records from other pids describe dead panes whose ids the current
+/// server may have handed out again, so they are ignored.
+///
+/// Used to recognise an agent pane that has no hook state and no `@aw_agent`
+/// stamp — panes that predate the stamping, which would otherwise look like
+/// plain shells.
+pub fn agent_hints(
+    manifest: &SessionManifest,
+    live_pid: Option<u32>,
+) -> BTreeMap<String, (String, String)> {
+    let mut out = BTreeMap::new();
+    let Some(pid) = live_pid else { return out };
+    for rec in manifest.sessions.values().filter(|r| r.server_pid == Some(pid)) {
+        for (id, p) in &rec.panes {
+            if !p.agent.is_empty() {
+                out.insert(id.clone(), (p.agent.clone(), p.session_id.clone()));
+            }
+        }
+    }
+    out
+}
+
 /// Drop a session entirely (workspace deleted, or pruned as deliberately
 /// killed). No-op if absent.
 pub fn remove_session(session: &str) {

@@ -65,34 +65,52 @@ const AGE_COLS: u16 = 5;
 /// cards; below [`CARD_ROWS`] we still always draw one card.
 const CHROME_MIN_HEIGHT: u16 = 8;
 
-/// Panes with agent activity inside [`WINDOW_SECS`], most recent first.
+/// Agent panes worth offering as a jump target, best first.
 ///
-/// `last_activity == 0` means no hook ever fired for the pane, so it is not
-/// active under any definition. Excluding it has a second benefit: `agent`
-/// is then always hook-derived, never the tmux fallback label — Claude's
-/// native binary reports its *version string* as the foreground command, so
-/// an un-hooked pane would otherwise show an agent named `2.1.267`.
+/// Two groups, in this order:
 ///
-/// Parked panes are the user saying "set this aside", which is exactly the
-/// opposite of "offer it to me as a jump target".
+///  1. panes with agent activity inside [`WINDOW_SECS`], most recent first;
+///  2. live agent panes with no recorded activity at all.
+///
+/// The second group is the whole reason this isn't a one-line filter. A
+/// session `aw resurrect` restored fires no hook until somebody types in it,
+/// so it has no activity to sort by — but it is a live agent holding a real
+/// conversation, and refusing to list it makes the picker useless for exactly
+/// the sessions you most want to get back to. They sort last, since "no idea
+/// when" should not outrank "two minutes ago".
+///
+/// A pane counts as an agent pane when [`PaneState::agent_known`] is set: a
+/// hook told us, or the pane carries our `@aw_agent` stamp. Checking `agent`
+/// itself would not do — it falls back to the tmux label, so a plain shell
+/// would claim to be an agent called "zsh".
+///
+/// Parked panes are the user saying "set this aside", the opposite of "offer
+/// it to me".
 pub fn active_panes(entries: &[PaneState], now: u64) -> Vec<PaneState> {
     let mut out: Vec<PaneState> = entries
         .iter()
-        .filter(|p| {
-            !p.parked
-                && p.last_activity != 0
-                && now.saturating_sub(p.last_activity) < WINDOW_SECS
-        })
+        .filter(|p| !p.parked && p.agent_known && !stale(p, now))
         .cloned()
         .collect();
-    // Most recent first; pane id breaks ties so the order never flickers
-    // between reloads.
+    // Known activity first, then unknown; within each, newest first. Pane id
+    // breaks ties so the order never flickers between reloads.
     out.sort_by(|a, b| {
-        b.last_activity
-            .cmp(&a.last_activity)
+        let known = (a.last_activity != 0, b.last_activity != 0);
+        known
+            .1
+            .cmp(&known.0)
+            .then_with(|| b.last_activity.cmp(&a.last_activity))
             .then_with(|| a.pane_id.cmp(&b.pane_id))
     });
     out
+}
+
+/// Has this pane's last known activity aged out of the window?
+///
+/// `last_activity == 0` means "never recorded", which is unknown rather than
+/// old, so it is never stale — that is the restored-session case.
+fn stale(p: &PaneState, now: u64) -> bool {
+    p.last_activity != 0 && now.saturating_sub(p.last_activity) >= WINDOW_SECS
 }
 
 /// How the current terminal size is spent.
@@ -300,15 +318,12 @@ fn header_line(sw: &Switcher) -> Line<'static> {
             Status::Idle => idle += 1,
         }
     }
-    // The window is spelled out because its absence is confusing: a live
-    // session that has been quiet since yesterday simply isn't here.
-    let mut spans = vec![
-        Span::styled(
-            "active agents",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("  last 24h", Style::default().fg(Color::DarkGray)),
-    ];
+    // No "last 24h" label any more: the list is every live agent pane, and
+    // only a pane we *know* has been quiet for longer than that is left out.
+    let mut spans = vec![Span::styled(
+        "active agents",
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+    )];
     for (n, label, color) in [
         (waiting, "waiting", Color::Red),
         (working, "working", Color::Yellow),
@@ -428,8 +443,8 @@ fn render_empty(f: &mut Frame, area: Rect, m: &Metrics) {
         y += 2;
     }
     for (i, text) in [
-        "Nothing has been active in the last 24 hours.",
-        "`aw dash` lists every session, however quiet.",
+        "No agent sessions are running.",
+        "`aw dash` also lists workspaces with no session.",
     ]
     .iter()
     .enumerate()
@@ -563,6 +578,7 @@ mod tests {
             parked: false,
             label: String::new(),
             pinned: false,
+            agent_known: true,
         }
     }
 
@@ -579,15 +595,44 @@ mod tests {
     }
 
     #[test]
-    fn active_panes_drops_parked_and_never_active() {
+    fn active_panes_drops_parked_and_shells_but_keeps_never_active_agents() {
         let mut parked = pane("%1", "alpha", "claude", 60, Status::Idle);
         parked.parked = true;
-        let mut never = pane("%2", "beta", "claude", 0, Status::Idle);
-        never.last_activity = 0;
+        // A restored agent: live, real conversation, no hook has fired yet.
+        let mut restored = pane("%2", "beta", "claude", 0, Status::Idle);
+        restored.last_activity = 0;
+        // A plain shell: no agent, so nothing to jump to.
+        let mut shell = pane("%4", "delta", "zsh", 0, Status::Idle);
+        shell.last_activity = 0;
+        shell.agent_known = false;   // label-derived, not a real agent
         let fresh = pane("%3", "gamma", "claude", 60, Status::Idle);
-        let out = active_panes(&[parked, never, fresh], now());
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].pane_id, "%3");
+        let out = active_panes(&[parked, restored, shell, fresh], now());
+        let ids: Vec<&str> = out.iter().map(|p| p.pane_id.as_str()).collect();
+        assert_eq!(ids, vec!["%3", "%2"], "known activity first, restored still listed");
+    }
+
+    /// The bug this guards: a session restored by `aw resurrect` was missing
+    /// from the picker entirely, because it had no activity to filter on.
+    #[test]
+    fn restored_agent_is_listed_even_though_nothing_has_aged() {
+        let mut restored = pane("%17", "video-editing", "claude", 0, Status::Idle);
+        restored.last_activity = 0;
+        let out = active_panes(&[restored], now());
+        assert_eq!(out.len(), 1, "a live agent must be offered as a jump target");
+        assert_eq!(out[0].pane_id, "%17");
+    }
+
+    /// Unknown age must not be mistaken for "very old" and dropped.
+    #[test]
+    fn stale_only_applies_to_panes_with_a_recorded_time() {
+        let n = now();
+        let mut never = pane("%1", "a", "claude", 0, Status::Idle);
+        never.last_activity = 0;
+        assert!(!stale(&never, n), "never-recorded is unknown, not stale");
+        let old = pane("%2", "a", "claude", WINDOW_SECS + 60, Status::Idle);
+        assert!(stale(&old, n));
+        let recent = pane("%3", "a", "claude", 60, Status::Idle);
+        assert!(!stale(&recent, n));
     }
 
     #[test]
@@ -670,7 +715,7 @@ mod tests {
     #[test]
     fn empty_state_explains_itself() {
         let out = render_to_string(&switcher(vec![]), 80, 14);
-        assert!(out.contains("last 24 hours"), "{}", out);
+        assert!(out.contains("No agent sessions are running"), "{}", out);
         assert!(out.contains("aw dash"), "points at the full view:\n{}", out);
     }
 

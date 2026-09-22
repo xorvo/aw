@@ -364,16 +364,9 @@ fn manifest_agent_hints(
     manifest: &SessionManifest,
     live_pid: Option<u32>,
 ) -> std::collections::HashMap<String, (String, String)> {
-    let mut out = std::collections::HashMap::new();
-    let Some(pid) = live_pid else { return out };
-    for rec in manifest.sessions.values().filter(|r| r.server_pid == Some(pid)) {
-        for (id, p) in &rec.panes {
-            if !p.agent.is_empty() {
-                out.insert(id.clone(), (p.agent.clone(), p.session_id.clone()));
-            }
-        }
-    }
-    out
+    crate::manifest::agent_hints(manifest, live_pid)
+        .into_iter()
+        .collect()
 }
 
 /// Pure core of `aw snapshot`: fold the live pane list into per-session
@@ -525,6 +518,8 @@ mod tests {
             pane_title: "t".into(),
             command: command.into(),
             path: "/ws/foo".into(),
+            aw_agent: String::new(),
+            aw_session_id: String::new(),
         };
         let panes = vec![
             pane("%1", "aw-foo", "zsh"),    // plain shell

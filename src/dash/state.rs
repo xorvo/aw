@@ -381,6 +381,35 @@ impl Snapshot {
     }
 }
 
+/// Append one line to `<state>/gc.log`.
+///
+/// Deleting a pane's state is the only irreversible thing the dashboard does,
+/// and it is invisible: the symptom shows up later as an agent that looks like
+/// it has never run. Both outcomes are recorded — the delete, and the more
+/// interesting case where the bulk listing said a pane was gone but tmux
+/// disagreed, which is the anomaly that sent us hunting in the first place.
+///
+/// Best effort and self-capping, because logging must never be the reason a
+/// snapshot load fails.
+fn audit(line: &str) {
+    let Ok(dir) = crate::dash::state_root() else { return };
+    let path = dir.join("gc.log");
+    // Keep it small; this is a breadcrumb trail, not a journal.
+    if std::fs::metadata(&path).map(|m| m.len() > 64 * 1024).unwrap_or(false) {
+        let _ = std::fs::remove_file(&path);
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(
+            f,
+            "{} pid={} {}",
+            crate::dash::state::now_epoch(),
+            std::process::id(),
+            line
+        );
+    }
+}
+
 /// Should this pane's state file be deleted?
 ///
 /// Only when it is missing from the bulk listing *and* a second, per-pane
@@ -390,7 +419,21 @@ fn should_drop(
     live_ids: &std::collections::HashSet<String>,
     confirm_gone: impl Fn(&str) -> bool,
 ) -> bool {
-    !live_ids.contains(pane_id) && confirm_gone(pane_id)
+    if live_ids.contains(pane_id) {
+        return false;
+    }
+    if confirm_gone(pane_id) {
+        audit(&format!("drop {} (listing={} panes, tmux agrees)", pane_id, live_ids.len()));
+        return true;
+    }
+    // The listing and tmux disagree about the same pane. Whatever makes this
+    // happen is what was silently destroying live agents' state.
+    audit(&format!(
+        "KEEP {} — absent from a {}-pane listing but tmux says it is alive",
+        pane_id,
+        live_ids.len()
+    ));
+    false
 }
 
 /// The agent running in a pane we have no hook state for, if we can know it.
@@ -491,6 +534,7 @@ mod tests {
         // Absent but tmux won't confirm — a short or failed listing. Keep it:
         // this is the case that was silently destroying live panes' state.
         assert!(!should_drop("%2", &live, |_| false));
+        // And both outcomes leave a breadcrumb, since the audit path runs here.
     }
 
     #[test]

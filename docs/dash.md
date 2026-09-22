@@ -64,6 +64,18 @@ delete makes a busy agent look like it has never done anything — it drops out 
 version only refused to act on a completely *empty* listing, which left a
 partial or short reply able to destroy state for live panes.
 
+Every decision is appended to `<state>/gc.log` (self-capping at 64 KB):
+
+```
+1790065878 pid=17497 drop %9500 (listing=2 panes, tmux agrees)
+1790065878 pid=17497 KEEP %17 — absent from a 2-pane listing but tmux says it is alive
+```
+
+A `KEEP` line means the bulk listing and tmux disagreed about the same pane.
+That should never happen, and it is exactly the anomaly that used to destroy
+state silently, so if files still go missing this log names the process and the
+moment.
+
 ## Pane options (for tmux-side tooling)
 
 `aw` stamps two pane-local tmux options on every agent pane it knows about:

@@ -29,7 +29,11 @@ pub fn run() -> Result<usize> {
             if live.is_empty() {
                 continue;
             }
-            if !live.contains(&stem) {
+            // Same rule as the dashboard's auto-gc: a pane absent from the
+            // bulk listing only counts as dead once tmux confirms it for that
+            // pane specifically. Deleting live panes' state on a short listing
+            // is silent and unrecoverable.
+            if !live.contains(&stem) && tmux::pane_is_gone(&stem) {
                 if std::fs::remove_file(&path).is_ok() {
                     removed += 1;
                 }

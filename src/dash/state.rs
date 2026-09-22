@@ -280,7 +280,14 @@ impl Snapshot {
                 //     wipe the cache during a blip.
                 if !panes.is_empty() {
                     for (pane_id, path) in &hook_paths {
-                        if !live_ids.contains(pane_id) {
+                        // Absent from the listing is a *suspicion*, not a
+                        // verdict. The old guard only covered an empty list, so
+                        // one short or partly unreadable listing permanently
+                        // deleted state for panes that were alive and busy —
+                        // and the agent then looked idle forever, because
+                        // nothing rebuilds a deleted file until the next hook.
+                        // Deletion is irreversible, so make tmux say it twice.
+                        if should_drop(pane_id, &live_ids, crate::dash::tmux::pane_is_gone) {
                             let _ = std::fs::remove_file(path);
                             if let Some(ref pdir) = parked_dir {
                                 let _ = std::fs::remove_file(pdir.join(pane_id));
@@ -374,6 +381,18 @@ impl Snapshot {
     }
 }
 
+/// Should this pane's state file be deleted?
+///
+/// Only when it is missing from the bulk listing *and* a second, per-pane
+/// question confirms it. Pure in the confirmation so the rule is testable.
+fn should_drop(
+    pane_id: &str,
+    live_ids: &std::collections::HashSet<String>,
+    confirm_gone: impl Fn(&str) -> bool,
+) -> bool {
+    !live_ids.contains(pane_id) && confirm_gone(pane_id)
+}
+
 /// The agent running in a pane we have no hook state for, if we can know it.
 ///
 /// `@aw_agent` first — we wrote it, so it is current. Then the manifest, which
@@ -460,6 +479,18 @@ mod tests {
         // Small sleep so successive calls produce distinguishable mtimes on
         // the workspace dir — recency-sort tests rely on this.
         std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+
+    #[test]
+    fn should_drop_needs_both_the_listing_and_a_confirmation() {
+        let live: HashSet<String> = ["%1".to_string()].into();
+        // Present in the listing: never dropped, whatever the confirmation says.
+        assert!(!should_drop("%1", &live, |_| true));
+        // Absent and confirmed gone: drop.
+        assert!(should_drop("%2", &live, |_| true));
+        // Absent but tmux won't confirm — a short or failed listing. Keep it:
+        // this is the case that was silently destroying live panes' state.
+        assert!(!should_drop("%2", &live, |_| false));
     }
 
     #[test]

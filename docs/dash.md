@@ -50,6 +50,20 @@ records:
 Unknown events are silent no-ops — a misconfigured hook can never break the
 agent.
 
+## When state files are removed
+
+A pane's state file is deleted once its pane is gone, which keeps the cache from
+growing forever. The check is deliberately paranoid: absence from the bulk
+`list-panes` reply is only a suspicion, and tmux is asked again about that pane
+specifically before anything is unlinked.
+
+The reason is that the deletion is silent and unrecoverable. Nothing rebuilds a
+removed file until the pane's agent happens to fire another hook, so a wrong
+delete makes a busy agent look like it has never done anything — it drops out of
+`aw switch`, and its age reads `—` in `aw dash` and on the phone. An earlier
+version only refused to act on a completely *empty* listing, which left a
+partial or short reply able to destroy state for live panes.
+
 ## Pane options (for tmux-side tooling)
 
 `aw` stamps two pane-local tmux options on every agent pane it knows about:

@@ -20,6 +20,29 @@ pub(crate) fn tmux_command() -> Command {
     cmd
 }
 
+/// Does tmux positively confirm this pane no longer exists?
+///
+/// Deliberately asymmetric: only `true` when tmux answers successfully *and*
+/// says the pane is absent. Any other outcome — query failed, tmux busy,
+/// output unreadable — returns `false`, because the caller uses this to decide
+/// whether to delete state, and an unanswered question must never be read as
+/// "yes, delete it".
+pub fn pane_is_gone(pane_id: &str) -> bool {
+    let out = tmux_command()
+        .args(["display-message", "-p", "-t", pane_id, "#{pane_id}"])
+        .stderr(Stdio::null())
+        .output();
+    match out {
+        // Exited cleanly and named the pane: it exists.
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().is_empty(),
+        // Non-zero from a server we just listed panes from means "no such
+        // pane". A missing server would have failed the listing instead.
+        Ok(_) => true,
+        // Couldn't even run tmux: we know nothing, so claim nothing.
+        Err(_) => false,
+    }
+}
+
 /// Record what an agent pane is running *onto the pane*, as tmux options.
 ///
 /// Our state files already hold this, but reading them means knowing `aw`'s

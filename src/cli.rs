@@ -206,8 +206,8 @@ pub enum InstallCmd {
         #[arg(long)]
         config: Option<std::path::PathBuf>,
     },
-    /// Install a launchd LaunchAgent so `aw serve` (phone remote) runs at
-    /// login and is kept alive (macOS). Re-run to update it.
+    /// Run `aw serve` (phone remote) at login and keep it alive: a launchd
+    /// LaunchAgent on macOS, a systemd user unit on Linux. Re-run to update it.
     Service {
         /// Remove the service instead of installing it
         #[arg(long)]

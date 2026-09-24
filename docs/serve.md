@@ -94,7 +94,7 @@ One caveat: the fit button and the key/paste endpoints act on **real** tmux
 panes whichever instance serves them, because tmux is the shared thing. A
 scratch instance is isolated for reading, not for writing.
 | `AW_REMOTE_TOKEN` | generated → `~/.cache/aw/remote-token` | fixed auth token |
-| `AW_FONT` | a Meslo/FiraCode Nerd Font in `~/Library/Fonts` | UI/terminal webfont served to the phone |
+| `AW_FONT` | a Meslo/FiraCode Nerd Font found in the system font dirs | UI/terminal webfont served to the phone |
 
 ## Security (LAN)
 
@@ -109,7 +109,7 @@ scratch instance is isolated for reading, not for writing.
 **Do not port-forward this to the internet.** For remote access, put it behind
 Tailscale/WireGuard (see the design doc, §4).
 
-## Run at login (launchd service)
+## Run at login (system service)
 
 `aw install all` sets this up for you. To manage it directly:
 
@@ -119,19 +119,35 @@ aw install service --uninstall  # stop and remove it
 aw install service --port 9000  # custom host/port (re-run to change)
 ```
 
-This writes a LaunchAgent to
-`~/Library/LaunchAgents/com.agent-workspaces.serve.plist` and loads it into
-your user session, so the daemon starts on login and restarts if it crashes.
-Output goes to `~/.cache/aw/serve.log`. The plist bakes in a PATH that
-includes Homebrew so `tmux` is found from launchd's minimal environment.
+One command, one backend per platform:
+
+| | macOS | Linux |
+| --- | --- | --- |
+| Unit file | `~/Library/LaunchAgents/com.agent-workspaces.serve.plist` | `~/.config/systemd/user/aw-serve.service` |
+| Loaded by | `launchctl bootstrap gui/<uid>` | `systemctl --user enable --now` |
+| Restart on crash | `KeepAlive` | `Restart=always` |
+| Inspect | `launchctl print gui/<uid>/com.agent-workspaces.serve` | `systemctl --user status aw-serve` |
+
+Either way the daemon starts on login, restarts if it crashes, and logs to
+`~/.cache/aw/serve.log`. The unit bakes in a PATH (Homebrew/Linuxbrew
+prefixes, your binary's own dir, the system dirs) so `tmux` is found from
+the minimal environment launchd and systemd hand their jobs.
 
 `aw self update` automatically restarts the service onto the new binary, so
-upgrades take effect without a manual reload. Run `aw install service` from a
-normal desktop session — loading into the GUI launchd domain needs one.
+upgrades take effect without a manual reload.
 
-On Linux there's no launchd; run `aw serve` from a systemd **user** unit
-(`~/.config/systemd/user/aw-serve.service` with `ExecStart=<aw> serve`, then
-`systemctl --user enable --now aw-serve`), or quick-and-dirty:
+**macOS:** run `aw install service` from a normal desktop session — loading
+into the GUI launchd domain needs one.
+
+**Linux:** a systemd user manager is normally torn down when your last
+session ends, taking `aw serve` with it. To keep the phone remote reachable
+while you're logged out:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+If you'd rather not run a service at all, quick-and-dirty still works:
 `nohup aw serve > ~/.cache/aw/serve.log 2>&1 &`.
 
 ## API

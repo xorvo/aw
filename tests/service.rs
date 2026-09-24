@@ -1,34 +1,48 @@
-//! Integration tests for `aw install service` (the launchd login service).
+//! Integration tests for `aw install service` (the login service).
 //!
-//! `AW_SERVICE_SKIP_LAUNCHCTL=1` writes the plist but skips the actual
-//! `launchctl` load, so these run anywhere without touching the host's
-//! real launchd or opening a network listener. macOS-only: the command
-//! bails on other platforms by design.
+//! `AW_SERVICE_SKIP_ACTIVATION=1` writes the unit file but skips the
+//! `launchctl` / `systemctl` call, so these run anywhere without touching
+//! the host's real launchd or systemd, or opening a network listener.
+//!
+//! macOS gets a launchd plist, Linux a systemd user unit; the assertions
+//! below branch on that. Other platforms have no backend — the command
+//! bails by design — so the file compiles to nothing there.
 
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 
 mod common;
 
+use std::path::PathBuf;
 use std::process::Command;
 
 use tempfile::TempDir;
 
 fn aw() -> Command {
     let mut c = Command::new(assert_cmd::cargo::cargo_bin("aw"));
-    c.env("AW_SERVICE_SKIP_LAUNCHCTL", "1");
+    c.env("AW_SERVICE_SKIP_ACTIVATION", "1");
     c
 }
 
-/// A sandboxed HOME + state dir so the plist and log land in the tempdir,
-/// never the developer's real `~/Library/LaunchAgents`.
+/// A sandboxed HOME + state dir so the unit file and log land in the
+/// tempdir, never the developer's real `~/Library/LaunchAgents` or
+/// `~/.config/systemd/user`.
 fn sandbox() -> (TempDir, TempDir) {
     (TempDir::new().unwrap(), TempDir::new().unwrap())
 }
 
+/// Where this platform's unit file should land under a sandboxed HOME.
+fn unit_path(home: &std::path::Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        home.join("Library/LaunchAgents/com.agent-workspaces.serve.plist")
+    } else {
+        home.join(".config/systemd/user/aw-serve.service")
+    }
+}
+
 #[test]
-fn install_writes_plist_then_uninstall_removes_it() {
+fn install_writes_unit_then_uninstall_removes_it() {
     let (home, state) = sandbox();
-    let plist = home.path().join("Library/LaunchAgents/com.agent-workspaces.serve.plist");
+    let unit = unit_path(home.path());
 
     let out = aw()
         .args(["install", "service"])
@@ -37,25 +51,33 @@ fn install_writes_plist_then_uninstall_removes_it() {
         .output()
         .expect("run install service");
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(plist.is_file(), "plist should exist at {}", plist.display());
+    assert!(unit.is_file(), "unit should exist at {}", unit.display());
 
-    let body = std::fs::read_to_string(&plist).unwrap();
-    assert!(body.contains("<key>Label</key>"));
-    assert!(body.contains("com.agent-workspaces.serve"));
-    assert!(body.contains("<string>serve</string>"), "ProgramArguments runs `serve`");
-    assert!(body.contains("<key>RunAtLoad</key>"));
-    assert!(body.contains("<key>KeepAlive</key>"));
+    let body = std::fs::read_to_string(&unit).unwrap();
+    if cfg!(target_os = "macos") {
+        assert!(body.contains("<key>Label</key>"));
+        assert!(body.contains("com.agent-workspaces.serve"));
+        assert!(body.contains("<string>serve</string>"), "ProgramArguments runs `serve`");
+        assert!(body.contains("<key>RunAtLoad</key>"));
+        assert!(body.contains("<key>KeepAlive</key>"));
+        assert!(body.contains("<key>PATH</key>"));
+    } else {
+        assert!(body.contains("[Service]"));
+        assert!(body.contains("serve"), "ExecStart runs `serve`");
+        assert!(body.contains("Restart=always"));
+        assert!(body.contains("WantedBy=default.target"));
+        assert!(body.contains(r#"Environment="PATH="#));
+    }
     // Log path resolves under the sandboxed state dir.
     assert!(
         body.contains(&state.path().join("serve.log").to_string_lossy().to_string()),
         "log path should point into AW_STATE_DIR:\n{}",
         body
     );
-    // PATH is baked so tmux is findable from launchd's minimal env.
-    assert!(body.contains("<key>PATH</key>"));
+    // PATH is baked so tmux is findable from the init system's minimal env.
     assert!(body.contains("/opt/homebrew/bin") || body.contains("/usr/local/bin"));
 
-    // Uninstall removes the plist.
+    // Uninstall removes the unit file.
     let out = aw()
         .args(["install", "service", "--uninstall"])
         .env("HOME", home.path())
@@ -63,13 +85,13 @@ fn install_writes_plist_then_uninstall_removes_it() {
         .output()
         .expect("run uninstall");
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(!plist.exists(), "plist should be gone after --uninstall");
+    assert!(!unit.exists(), "unit should be gone after --uninstall");
 }
 
 #[test]
 fn install_honors_host_and_port_flags() {
     let (home, state) = sandbox();
-    let plist = home.path().join("Library/LaunchAgents/com.agent-workspaces.serve.plist");
+    let unit = unit_path(home.path());
 
     let out = aw()
         .args(["install", "service", "--host", "127.0.0.1", "--port", "9999"])
@@ -79,17 +101,17 @@ fn install_honors_host_and_port_flags() {
         .expect("run install service");
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
 
-    let body = std::fs::read_to_string(&plist).unwrap();
-    assert!(body.contains("<string>--host</string>"));
-    assert!(body.contains("<string>127.0.0.1</string>"));
-    assert!(body.contains("<string>--port</string>"));
-    assert!(body.contains("<string>9999</string>"));
+    let body = std::fs::read_to_string(&unit).unwrap();
+    assert!(body.contains("--host"));
+    assert!(body.contains("127.0.0.1"));
+    assert!(body.contains("--port"));
+    assert!(body.contains("9999"));
 }
 
 #[test]
 fn install_is_idempotent() {
     let (home, state) = sandbox();
-    let plist = home.path().join("Library/LaunchAgents/com.agent-workspaces.serve.plist");
+    let unit = unit_path(home.path());
 
     for _ in 0..2 {
         let out = aw()
@@ -100,7 +122,7 @@ fn install_is_idempotent() {
             .expect("run install service");
         assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     }
-    assert!(plist.is_file(), "second run leaves a valid plist");
+    assert!(unit.is_file(), "second run leaves a valid unit file");
 }
 
 #[test]

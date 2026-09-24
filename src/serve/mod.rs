@@ -498,25 +498,123 @@ fn manifest() -> String {
     .to_string()
 }
 
+/// Nerd Font filenames we prefer, best first — the families the terminal
+/// themes in this project assume.
+const FONT_NAMES: &[&str] = &[
+    "MesloLGSNerdFontMono-Regular.ttf",
+    "MesloLGSNerdFont-Regular.ttf",
+    "FiraCodeNerdFontMono-Regular.ttf",
+];
+
+/// How good a match a font filename is, lower being better; `None` means
+/// "not a candidate".
+///
+/// The preferred names above are what the Nerd Fonts installer drops into
+/// `~/Library/Fonts`. Distro packages ship whichever family you installed
+/// (`JetBrainsMonoNerdFontMono-Regular.ttf`, `HackNerdFont-Regular.ttf`,
+/// …), so rather than enumerate them, fall back to any regular-weight
+/// Nerd Font — the point is glyph coverage, not a specific typeface.
+fn font_rank(name: &str) -> Option<usize> {
+    if let Some(i) = FONT_NAMES.iter().position(|n| *n == name) {
+        return Some(i);
+    }
+    if !name.contains("NerdFont") || !name.ends_with("-Regular.ttf") {
+        return None;
+    }
+    // Monospaced variants first: this is served to a terminal view.
+    let base = FONT_NAMES.len();
+    if name.contains("NerdFontMono-") {
+        Some(base)
+    } else if name.contains("NerdFont-") {
+        Some(base + 1)
+    } else {
+        // NerdFontPropo and friends — usable, but last.
+        Some(base + 2)
+    }
+}
+
+/// Font directories to search, in preference order: macOS puts user
+/// fonts in `~/Library/Fonts`, Linux in `~/.local/share/fonts` (or the
+/// legacy `~/.fonts`), with distro packages landing system-wide. The
+/// system dirs nest fonts in per-family subdirectories, so we walk them
+/// rather than joining a filename directly.
+fn font_dirs() -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        out.push(home.join("Library/Fonts"));
+        out.push(home.join(".local/share/fonts"));
+        out.push(home.join(".fonts"));
+    }
+    out.push(std::path::PathBuf::from("/usr/local/share/fonts"));
+    out.push(std::path::PathBuf::from("/usr/share/fonts"));
+    out
+}
+
 /// Nerd Font served to the phone so UI glyphs + terminal powerline
-/// symbols render. Falls back through a few common filenames.
+/// symbols render. `AW_FONT` wins outright; otherwise we look for a
+/// known filename in the platform's font directories. Resolved once —
+/// every phone that loads the PWA hits `/font.ttf`, and walking
+/// `/usr/share/fonts` per request would be silly.
 fn load_font() -> Option<Vec<u8>> {
-    let home = dirs::home_dir()?;
-    let candidates = [
-        std::env::var("AW_FONT").ok().map(std::path::PathBuf::from),
-        Some(home.join("Library/Fonts/MesloLGSNerdFontMono-Regular.ttf")),
-        Some(home.join("Library/Fonts/MesloLGSNerdFont-Regular.ttf")),
-        Some(home.join("Library/Fonts/FiraCodeNerdFontMono-Regular.ttf")),
-    ];
-    candidates
-        .into_iter()
-        .flatten()
-        .find_map(|p| std::fs::read(p).ok())
+    static FONT: std::sync::OnceLock<Option<Vec<u8>>> = std::sync::OnceLock::new();
+    FONT.get_or_init(find_font).clone()
+}
+
+fn find_font() -> Option<Vec<u8>> {
+    if let Some(p) = std::env::var_os("AW_FONT") {
+        // An explicit override that doesn't resolve is a user mistake
+        // worth surfacing, not something to silently paper over.
+        match std::fs::read(&p) {
+            Ok(b) => return Some(b),
+            Err(e) => eprintln!("aw serve: AW_FONT={} unreadable ({e})", p.to_string_lossy()),
+        }
+    }
+    for dir in font_dirs() {
+        // Depth 3 covers `/usr/share/fonts/TTF/x.ttf` and
+        // `/usr/share/fonts/truetype/meslo/x.ttf` without descending into
+        // the whole tree. Walk order is arbitrary, so keep the best
+        // FONT_NAMES rank seen rather than the first hit.
+        let mut best: Option<(usize, std::path::PathBuf)> = None;
+        for entry in walkdir::WalkDir::new(&dir).max_depth(3).into_iter().flatten() {
+            let Some(name) = entry.file_name().to_str() else {
+                continue;
+            };
+            let Some(rank) = font_rank(name) else {
+                continue;
+            };
+            if best.as_ref().is_none_or(|(b, _)| rank < *b) {
+                best = Some((rank, entry.path().to_path_buf()));
+            }
+        }
+        if let Some((_, path)) = best {
+            if let Ok(b) = std::fs::read(&path) {
+                return Some(b);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn font_rank_prefers_named_fonts_then_mono_nerd_fonts() {
+        // The explicitly preferred names win, in order.
+        assert_eq!(font_rank("MesloLGSNerdFontMono-Regular.ttf"), Some(0));
+        assert!(font_rank("FiraCodeNerdFontMono-Regular.ttf") > Some(0));
+        // Any other Nerd Font is a usable fallback, mono variants first —
+        // this is what a distro package actually installs.
+        let mono = font_rank("JetBrainsMonoNerdFontMono-Regular.ttf").unwrap();
+        let prop = font_rank("JetBrainsMonoNerdFont-Regular.ttf").unwrap();
+        let propo = font_rank("JetBrainsMonoNerdFontPropo-Regular.ttf").unwrap();
+        assert!(mono < prop && prop < propo, "{mono} {prop} {propo}");
+        assert!(mono > font_rank("FiraCodeNerdFontMono-Regular.ttf").unwrap());
+        // Non-candidates.
+        assert_eq!(font_rank("DejaVuSans.ttf"), None);
+        assert_eq!(font_rank("JetBrainsMonoNerdFont-Bold.ttf"), None);
+    }
 
     #[test]
     fn split_url_decodes_query_params() {

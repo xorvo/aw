@@ -21,26 +21,46 @@ e.g.  ![aw dash](docs/img/dash.png)
   Code](https://www.anthropic.com/claude-code), Codex, and pi out of the
   box.
 
-## Install (macOS)
+## Install
+
+**macOS or Linux**, arm64 or x86_64 — one line, no toolchain:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/xorvo/aw/main/scripts/install-release.sh | sh
+aw install all          # shell hook + agent hooks + tmux bindings
+```
+
+It drops a prebuilt binary in `~/.local/bin`, checked against the
+checksum published with the release. Set `AW_BIN_DIR` to install
+somewhere else, or `AW_VERSION=vX.Y.Z` to pin a version.
+
+**macOS** — Homebrew, if you'd rather:
 
 ```bash
 brew tap xorvo/tap
 brew install aw
-aw install all          # shell hook + agent hooks + tmux bindings
+aw install all
 ```
 
-Or grab the binary directly:
+**From source** (any platform with a Rust toolchain):
 
 ```bash
-TAG=$(curl -fsSL https://api.github.com/repos/xorvo/aw/releases/latest | jq -r .tag_name)
-TRIPLE=$(uname -m | sed 's/arm64/aarch64/')-apple-darwin
-curl -fsSL "https://github.com/xorvo/aw/releases/download/${TAG}/aw-${TAG}-${TRIPLE}.tar.gz" \
-  | tar -xz -C ~/.local/bin
-xattr -d com.apple.quarantine ~/.local/bin/aw 2>/dev/null
+git clone https://github.com/xorvo/aw && cd aw && ./install.sh
 aw install all
 ```
 
 Upgrade later with `brew upgrade aw` or `aw self update`.
+
+### Platform notes
+
+`aw` runs the same on macOS and Linux; a few integrations differ:
+
+| | macOS | Linux |
+| --- | --- | --- |
+| `aw serve` at login (`aw install service`) | launchd LaunchAgent | systemd user unit — add `loginctl enable-linger` to survive logout |
+| Desktop notifications | Notification Center | D-Bus (`notify-send` stack) |
+| `aw install hammerspoon` menu selector | ✓ | — (use `aw switch` or the phone remote) |
+| Install via Homebrew tap | ✓ | — (release tarball or source) |
 
 ## 60-second quickstart
 

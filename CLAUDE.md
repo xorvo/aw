@@ -20,6 +20,8 @@ The CLI is a Rust binary (`src/`). Key modules:
 - **src/shell/** — `shell-init`, completions, workspace detection
 - **src/install/** — `aw install …` (shell rc, agent hooks, tmux bindings)
 - **src/install/hammerspoon.rs** — optional macOS menu selector (docs/hammerspoon.md)
+- **src/install/service.rs** — `aw install service` (launchd on macOS,
+  systemd user unit on Linux)
 - **src/hook.rs** — `aw hook` (agent state writer, called from agent hooks)
 - **src/config.rs** — `config.yaml` parser (serde_yaml; no `yq` at runtime)
 - **src/paths.rs**, **src/git.rs**, **src/self_update.rs**
@@ -63,12 +65,19 @@ aw delete my-task
 - **tmux** (optional) — workspace sessions + the dashboard
 - **cargo / Rust** — to build from source
 
+Supported platforms: macOS and Linux. Keep new code portable — reach for
+`cfg!(target_os = ...)` only where the OS genuinely differs (init system,
+font/app locations), and give the other platform a working path rather than
+a bail.
+
 ## Release
 
 A `chore: bump to vX.Y.Z` commit (Cargo.toml + Cargo.lock) followed by a `vX.Y.Z`
-tag push triggers `.github/workflows/release.yml`, which builds + signs the
-macOS binaries, publishes a GitHub Release, and bumps the Homebrew tap. Always
-bump `Cargo.toml` **before** tagging. Details: [CONTRIBUTING.md](CONTRIBUTING.md).
+tag push triggers `.github/workflows/release.yml`, which builds macOS (signed)
+and Linux binaries for arm64 + x86_64, publishes a GitHub Release, and bumps the
+Homebrew tap (macOS only). The release matrix and
+`src/self_update.rs::target_triple` must list the same triples. Always bump
+`Cargo.toml` **before** tagging. Details: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Conventions
 
@@ -98,8 +107,10 @@ bump `Cargo.toml` **before** tagging. Details: [CONTRIBUTING.md](CONTRIBUTING.md
   `scripts/build-frontend.sh` after editing `app.ts`. Usage in
   [docs/serve.md](docs/serve.md); design + roadmap in
   [docs/remote-sessions.md](docs/remote-sessions.md).
-- **src/install/service.rs** — `aw install service`, a launchd LaunchAgent
-  that runs `aw serve` at login (folded into `aw install all`). `aw self
-  update` calls `service::refresh_after_upgrade()` to bounce the daemon onto
-  the new binary. macOS-only; plist rendering is pure + unit-tested, and
-  `AW_SERVICE_SKIP_LAUNCHCTL=1` writes the plist without touching launchd.
+- **src/install/service.rs** — `aw install service`, which runs `aw serve` at
+  login (folded into `aw install all`): a launchd LaunchAgent on macOS, a
+  systemd **user** unit on Linux. `aw self update` calls
+  `service::refresh_after_upgrade()` to bounce the daemon onto the new binary.
+  Both unit renderers are pure + unit-tested, and
+  `AW_SERVICE_SKIP_ACTIVATION=1` writes the unit file without touching
+  launchd/systemd.

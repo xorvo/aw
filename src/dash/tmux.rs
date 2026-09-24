@@ -85,21 +85,24 @@ pub(crate) fn pane_stamps(agent: &str, session_id: &str) -> Vec<(&'static str, S
     out
 }
 
-/// Where Homebrew and friends put tmux. Probed when PATH doesn't have it.
+/// Where Homebrew, Linuxbrew and distro packages put tmux. Probed when
+/// PATH doesn't have it.
 const TMUX_CANDIDATES: &[&str] = &[
     "/opt/homebrew/bin/tmux",
     "/usr/local/bin/tmux",
+    "/home/linuxbrew/.linuxbrew/bin/tmux",
     "/usr/bin/tmux",
 ];
 
 /// The tmux binary to run, resolved once per process.
 ///
 /// `Command::new("tmux")` alone isn't enough. Anything started from the GUI —
-/// a Hammerspoon hotkey, Raycast, a launchd agent — inherits a minimal PATH
-/// with no Homebrew on it, so tmux looks *absent* rather than broken, and the
-/// dashboard quietly drops to its file-only fallback: no live pane names, no
-/// refreshed status. `install::service` already had to bake a PATH into its
-/// plist for exactly this reason; resolving here fixes every caller at once.
+/// a Hammerspoon hotkey, Raycast, a launchd agent, a systemd user unit —
+/// inherits a minimal PATH with no Homebrew on it, so tmux looks *absent*
+/// rather than broken, and the dashboard quietly drops to its file-only
+/// fallback: no live pane names, no refreshed status. `install::service`
+/// already had to bake a PATH into its unit file for exactly this reason;
+/// resolving here fixes every caller at once.
 fn tmux_bin() -> &'static str {
     static BIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BIN.get_or_init(|| {

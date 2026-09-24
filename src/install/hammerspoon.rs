@@ -8,6 +8,11 @@
 //! Both apps are hard requirements, so `aw install all` only runs this step
 //! when it finds them; `aw install hammerspoon` runs regardless, which is
 //! what you want when installing ahead of the apps or on a second machine.
+//!
+//! A macOS integration: neither app ships for Linux, so `aw install all`
+//! never reaches this step there. Linux users get `aw switch` and the
+//! phone remote instead. The command itself still runs anywhere — the
+//! generated Lua is inert text until Hammerspoon loads it.
 
 use std::path::{Path, PathBuf};
 
@@ -100,7 +105,17 @@ pub fn install() -> Result<()> {
         // Not an error: installing before the apps is legitimate, and the
         // generated Lua is inert until Hammerspoon loads it.
         println!("⚠️  Not found: {}", missing.join(", "));
-        println!("   Installing anyway — the menu stays inert until both are present.");
+        if cfg!(target_os = "macos") {
+            println!("   Installing anyway — the menu stays inert until both are present.");
+        } else {
+            // Neither app ships for Linux, so this is never going to do
+            // anything here. Write the files regardless (a shared home dir
+            // or an NFS mount is a real setup) but don't pretend it's a
+            // matter of installing them later.
+            println!("   This is a macOS integration — neither app ships for {}.",
+                     std::env::consts::OS);
+            println!("   Writing the files anyway; use `aw switch` or `aw serve` here.");
+        }
     }
 
     let dir = config_dir()?;

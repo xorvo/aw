@@ -27,7 +27,9 @@ aw/
 │   └── *.md               # resurrect, serve, shell integration, …
 ├── .github/workflows/
 │   ├── ci.yml             # CI: cargo test on every push / PR
-│   └── release.yml        # CI: build + publish macOS tarballs on `v*` tag
+│   └── release.yml        # CI: build + publish macOS/Linux tarballs on `v*` tag
+├── scripts/
+│   └── install-release.sh # the `curl | sh` binary installer (end users)
 ├── install.sh             # cargo build + place binary + bootstrap config
 └── CONTRIBUTING.md        # you are here
 ```
@@ -53,8 +55,14 @@ spawn one via `tmux -S /tmp/awts-<pid>-<rand>.sock` and kill it on Drop.
 
 ## The release process
 
-`aw` ships pre-built macOS binaries via GitHub Releases, and `aw self
-update` pulls them. The release pipeline is fully automatic — the only
+`aw` ships pre-built macOS and Linux binaries via GitHub Releases, and
+`aw self update` pulls them. `scripts/install-release.sh` is the
+`curl | sh` installer end users run for the first install; it downloads
+from the same release assets and verifies the published `.sha256`.
+
+Its asset-name format, the release matrix, `[package.metadata.binstall]`
+in `Cargo.toml`, and `src/self_update.rs::target_triple` all encode the
+same naming convention — change one and you must change the rest. The release pipeline is fully automatic — the only
 manual steps are bumping the version, tagging, and pushing the tag.
 
 ### Cutting a release
@@ -90,9 +98,11 @@ When the workflow finishes you'll have:
 
   - A new GitHub Release at `https://github.com/xorvo/aw/releases/tag/<TAG>`
     with auto-generated release notes (commits since the previous tag).
-  - Two assets attached:
+  - Four assets attached:
       - `aw-<TAG>-aarch64-apple-darwin.tar.gz`
       - `aw-<TAG>-x86_64-apple-darwin.tar.gz`
+      - `aw-<TAG>-aarch64-unknown-linux-gnu.tar.gz`
+      - `aw-<TAG>-x86_64-unknown-linux-gnu.tar.gz`
     each with a sibling `.sha256` file.
 
 After that, on any installed machine:
@@ -206,13 +216,18 @@ sed \
 
 ### Adding a new build target
 
-Today only macOS is supported. To add Linux / Windows:
+macOS and Linux (arm64 + x86_64) are built today. To add another —
+Windows, a musl Linux build, a BSD:
 
-  1. Add the triple to `release.yml`'s `matrix.target` (and pick the
-     right `runs-on:` for it — `ubuntu-latest`, `windows-latest`).
+  1. Add a `{target, runner}` pair to `release.yml`'s `matrix.include`.
   2. Add the triple to the allow-list in `src/self_update.rs::target_triple`.
-  3. Cut a new release; the new asset will be published alongside the
-     existing macOS ones.
+     The two lists must agree: a triple only in the allow-list turns
+     `aw self update` into a 404 from GitHub.
+  3. Cut a new release; the new asset is published alongside the rest.
+
+The Linux jobs deliberately run on `ubuntu-22.04` rather than the latest
+image: the binary links glibc, so building against the oldest image
+GitHub still offers is what makes it run on older distros too.
 
 ### CI overview
 

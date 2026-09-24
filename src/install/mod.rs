@@ -86,13 +86,14 @@ fn run_all() -> Result<()> {
     println!("→ Phone remote (aw serve at login)");
     let _ = service::install(None, None);
     println!();
-    // Optional integration: pointless without both apps, so don't nag users
-    // who have neither. `aw install hammerspoon` is the explicit opt-in and
-    // skips this check.
+    // Optional macOS-only integration: pointless without both apps (and
+    // there are none to find on Linux), so don't nag users who have
+    // neither. `aw install hammerspoon` is the explicit opt-in and skips
+    // this check.
     if hammerspoon::available() {
         println!("→ Hammerspoon menu selector");
         let _ = hammerspoon::install();
-    } else {
+    } else if cfg!(target_os = "macos") {
         println!("→ Hammerspoon menu selector — skipped (needs Hammerspoon + Ghostty)");
         println!("   Install it anyway with: aw install hammerspoon");
     }

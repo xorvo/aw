@@ -1,9 +1,13 @@
 name: release
 
-# Triggered by pushing a `v*` tag (e.g. `v1.0.0`). Builds a macOS arm64 +
-# x86_64 binary, ad-hoc-signs each so Gatekeeper is less aggressive, packs
-# tarballs named for `aw self update` to find them, and attaches everything
-# to the GitHub Release.
+# Triggered by pushing a `v*` tag (e.g. `v1.0.0`). Builds macOS (arm64 +
+# x86_64) and Linux (arm64 + x86_64) binaries, ad-hoc-signs the macOS ones
+# so Gatekeeper is less aggressive, packs tarballs named for `aw self
+# update` to find them, and attaches everything to the GitHub Release.
+#
+# Linux builds run on ubuntu-22.04 rather than the latest image on purpose:
+# the binary links glibc, so building against the oldest image GitHub still
+# offers is what makes it run on older distros too.
 
 on:
   push:
@@ -16,13 +20,19 @@ permissions:
 jobs:
   build:
     name: build (${{ matrix.target }})
-    runs-on: macos-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - aarch64-apple-darwin
-          - x86_64-apple-darwin
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
 
@@ -45,6 +55,7 @@ jobs:
         # downloaded from the internet, but `aw self update` strips the
         # quarantine xattr after upgrading. Ad-hoc signing keeps the
         # signature subsystem from outright rejecting it on launch.
+        if: runner.os == 'macOS'
         run: codesign --sign - --force target/${{ matrix.target }}/release/aw
 
       - name: package
@@ -53,7 +64,13 @@ jobs:
           mkdir -p dist
           NAME=aw-${GITHUB_REF_NAME}-${{ matrix.target }}
           tar -C target/${{ matrix.target }}/release -czf "dist/${NAME}.tar.gz" aw
-          shasum -a 256 "dist/${NAME}.tar.gz" \
+          # sha256sum on Linux, shasum on macOS — both print "<digest>  <file>".
+          if command -v sha256sum >/dev/null 2>&1; then
+            SUM="sha256sum"
+          else
+            SUM="shasum -a 256"
+          fi
+          $SUM "dist/${NAME}.tar.gz" \
             | awk '{ print $1 }' > "dist/${NAME}.tar.gz.sha256"
           echo "asset_name=${NAME}" >> "$GITHUB_OUTPUT"
 
@@ -95,7 +112,9 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
           # The .sha256 files were uploaded by the matrix build above. They
-          # contain just the hex digest, no filename.
+          # contain just the hex digest, no filename. The tap ships macOS
+          # bottles only; Linux users install from the release tarball or
+          # from source.
           fetch() {
             curl -fsSL --retry 5 --retry-delay 3 --retry-connrefused \
               "https://github.com/xorvo/aw/releases/download/${TAG}/aw-${TAG}-${1}.tar.gz.sha256"

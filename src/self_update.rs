@@ -11,7 +11,7 @@
 //! macOS specifics: downloaded binaries land with the `com.apple.quarantine`
 //! extended attribute set, which makes Gatekeeper prompt the user on next
 //! exec. We strip that attribute right after the swap so the upgrade is
-//! seamless.
+//! seamless. Linux has no equivalent step.
 
 use anyhow::{Context, Result};
 
@@ -126,9 +126,14 @@ fn target_triple() -> Result<&'static str> {
         Ok("aarch64-apple-darwin")
     } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
         Ok("x86_64-apple-darwin")
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        Ok("aarch64-unknown-linux-gnu")
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Ok("x86_64-unknown-linux-gnu")
     } else {
         Err(anyhow::anyhow!(
-            "self-update is only available for macOS today (target: arch={}, os={})",
+            "no self-update build is published for this platform \
+             (arch={}, os={}); build from source instead",
             std::env::consts::ARCH,
             std::env::consts::OS
         ))
@@ -142,12 +147,13 @@ mod tests {
     #[test]
     fn target_triple_matches_one_of_the_release_targets() {
         // Compile-time test: we always resolve to a target the workflow
-        // builds for, or fail with a clear message. On the test host this
-        // means macOS arm64 / x86_64.
+        // builds for, or fail with a clear message. On a supported test
+        // host that means macOS or Linux, arm64 / x86_64.
         let t = target_triple();
         if cfg!(target_os = "macos") {
-            let s = t.unwrap();
-            assert!(s.ends_with("-apple-darwin"), "got: {}", s);
+            assert!(t.unwrap().ends_with("-apple-darwin"));
+        } else if cfg!(target_os = "linux") {
+            assert!(t.unwrap().ends_with("-unknown-linux-gnu"));
         } else {
             assert!(t.is_err());
         }

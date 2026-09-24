@@ -4,7 +4,17 @@ version = "1.12.1"
 edition = "2021"
 description = "Manage isolated workspaces for AI agents, with a tmux-based dashboard for live state."
 license = "MIT"
+repository = "https://github.com/xorvo/aw"
 publish = false
+
+# Lets `cargo binstall` fetch a release tarball instead of compiling. The
+# crate isn't on crates.io (`publish = false`), so this only applies to
+#   cargo binstall --git https://github.com/xorvo/aw aw
+# Keep the URL in step with the asset names in .github/workflows/release.yml.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.{ archive-format }"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
 
 [[bin]]
 name = "aw"

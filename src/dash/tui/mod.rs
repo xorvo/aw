@@ -36,6 +36,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::dash::state::Snapshot;
 use crate::dash::tmux;
+use crate::cli::SidebarSide;
 use crate::dash::tui::app::{Action, App};
 
 /// `aw dash` — interactive popup. Returns once the user quits or jumps.
@@ -143,9 +144,10 @@ fn handle_exit_action(a: Action) {
 /// `aw dash sidebar` — open the agent sidebar.
 ///
 /// Idempotent within a tmux session: if a sidebar pane (tagged
-/// `@aw-sidebar = 1`) already exists, we just focus it. Otherwise we split
-/// a new 42-column pane to the right and tag it.
-pub fn run_sidebar() -> Result<()> {
+/// `@aw-sidebar = 1`) already exists, we just focus it — `side` only
+/// applies when one is actually created. Otherwise we split a new
+/// 42-column pane on `side` and tag it.
+pub fn run_sidebar(side: SidebarSide) -> Result<()> {
     if std::env::var_os("TMUX").is_none() {
         anyhow::bail!("not inside a tmux session");
     }
@@ -161,10 +163,16 @@ pub fn run_sidebar() -> Result<()> {
 
     let aw_self = std::env::current_exe()?;
     let cmd = format!("{} _sidebar-loop", aw_self.display());
+    // `-b` puts the new pane *before* the target — left, for a horizontal
+    // split. Without it tmux splits to the right.
+    let split = match side {
+        SidebarSide::Left => "-hb",
+        SidebarSide::Right => "-h",
+    };
     let out = crate::dash::tmux::tmux_command()
         .args([
             "split-window",
-            "-h",
+            split,
             "-l", "42",
             "-t", &session,
             "-P",                       // print the new pane id...

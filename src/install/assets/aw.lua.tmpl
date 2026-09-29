@@ -144,14 +144,23 @@ end
 -- and they turn soft. `hs.canvas` renders at the display's backing scale, which
 -- stays sharp and lets the colours match the terminal dashboard: red wants
 -- your attention, amber is busy, green is done.
+-- Colours mirror `dash::render::shown_rgb`, the one palette every surface uses.
 local STATUS = {
   waiting = { label = "waiting", system = "NSStatusUnavailable",
-              color = { red = 0.96, green = 0.34, blue = 0.33 } },
+              color = { red = 0.973, green = 0.318, blue = 0.286 } },
   working = { label = "working", system = "NSStatusPartiallyAvailable",
-              color = { red = 0.99, green = 0.72, blue = 0.24 } },
+              color = { red = 0.824, green = 0.600, blue = 0.133 } },
+  stalled = { label = "stalled", system = "NSStatusPartiallyAvailable",
+              color = { red = 0.737, green = 0.455, blue = 0.871 } },
   idle = { label = "idle", system = "NSStatusAvailable",
-           color = { red = 0.36, green = 0.80, blue = 0.44 } },
+           color = { red = 0.247, green = 0.725, blue = 0.314 } },
 }
+
+-- `shown` is what the pane can honestly be said to be doing; `status` is only
+-- what it last claimed. Older servers send no `shown`, so fall back.
+local function shown_of(r)
+  return r.shown or r.status
+end
 
 -- Canvas points. Render generously and let the chooser scale *down* — a
 -- downsample stays crisp where an upsample does not.
@@ -226,10 +235,13 @@ function M.show()
 
   local choices = {}
   for _, r in ipairs(rows) do
-    local spec = STATUS[r.status] or STATUS.idle
+    local spec = STATUS[shown_of(r)] or STATUS.idle
+    -- `N spawned` says this row stands for a group without listing the group.
+    local extra = (r.spawned or 0) > 0 and string.format("  ·  %d spawned", r.spawned) or ""
     choices[#choices + 1] = {
       text = headline(r),
-      subText = string.format("%s  ·  %s  ·  %s  ·  %s", spec.label, r.workspace, r.agent, r.age),
+      subText = string.format("%s  ·  %s  ·  %s  ·  %s%s",
+        spec.label, r.workspace, r.agent, r.age, extra),
       image = status_dot(r.status),
       pane_id = r.pane_id,
       session = r.session,

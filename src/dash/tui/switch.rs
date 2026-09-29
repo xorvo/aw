@@ -569,12 +569,19 @@ pub struct Entry {
     pub age_secs: u64,
     /// The same short string the cards print ("2m", "16h").
     pub age: String,
+    /// What the pane can honestly be said to be doing: may be `stalled`, where
+    /// `status` only reports what it last claimed.
+    pub shown: &'static str,
+    /// How many panes this lead spawned inside its own tmux window. The cards
+    /// show it, so anything driving the picker from this JSON needs it too.
+    pub spawned: usize,
 }
 
 /// `aw switch --json` — the switcher's list as JSON, same filter and order.
 pub fn cmd_json() -> Result<()> {
     let snap = Snapshot::load()?;
     let now = crate::dash::state::now_epoch();
+    let spawned = spawned_counts(&snap.entries);
     let rows: Vec<Entry> = active_panes(&snap.entries, now)
         .iter()
         .map(|p| Entry {
@@ -587,6 +594,8 @@ pub fn cmd_json() -> Result<()> {
             last_activity: p.last_activity,
             age_secs: now.saturating_sub(p.last_activity),
             age: humanize_age(p.last_activity),
+            shown: crate::dash::render::shown_label(p.shown(now)),
+            spawned: spawned.get(&p.pane_id).copied().unwrap_or(0),
         })
         .collect();
     println!("{}", serde_json::to_string_pretty(&rows)?);

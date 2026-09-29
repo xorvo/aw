@@ -247,6 +247,14 @@ Two workflows live in `.github/workflows/`:
 - Don't `unwrap()` outside tests. Use `?` and `anyhow::Context`.
 - Don't add error handling, fallbacks, or validation for scenarios that
   can't happen. Trust internal invariants.
+- Deleting pane state is the only irreversible operation in the tool. It has
+  exactly one decision point, `dash::state::should_drop`, which requires that
+  the state be stamped with the pid of the tmux server the caller is talking to.
+  Don't add a second path, and don't relax it: a harness that sandboxed tmux but
+  not `AW_STATE_DIR` once wiped a developer's live agents' state, silently.
+- When a test starts a tmux server, start it with `common::sandbox_env`. The
+  server passes its environment to every pane it later creates, so a partially
+  sandboxed server leaks straight onto the real cache.
 - One central choke point per concept: status icons go through
   `dash::render::status_glyph`, tmux pane queries through
   `dash::tmux::list_panes_with_metadata`, marker-block edits through

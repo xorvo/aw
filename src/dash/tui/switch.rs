@@ -622,6 +622,7 @@ mod tests {
             pinned: false,
             agent_known: true,
             window_id: String::new(),
+            server_pid: None,
             lead_pane: String::new(),
         }
     }

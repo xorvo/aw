@@ -83,9 +83,24 @@ Homebrew tap (macOS only). The release matrix and
 
 - No `unwrap()` outside tests — use `?` + `anyhow::Context`.
 - Don't guard against scenarios that can't happen; trust internal invariants.
-- One choke point per concept (e.g. status icons → `dash::render::status_glyph`,
+- One choke point per concept (e.g. status icons → `dash::render::shown_glyph`,
   pane queries → `dash::tmux::list_panes_with_metadata`). Don't sprinkle
   equivalents.
+- **Deleting a user's pane state is the one irreversible thing `aw` does.** It
+  goes through `dash::state::should_drop` and nothing else. A process may only
+  collect state stamped with the pid of the tmux server it is itself talking to;
+  state owned by another *live* server, or with no owner recorded, is never
+  touched. Absence from one `list-panes` reply is a suspicion, not a verdict.
+  Every decision is logged to `<state>/gc.log`. This is not defensive
+  over-engineering: a test harness that sandboxed tmux but not `AW_STATE_DIR`
+  once deleted a developer's live agents' state, and the symptom (agents that
+  look like they have never run) is invisible until someone notices.
+- **Tests must never touch the real `~/.cache/aw`.** Use `TestEnv`, and when
+  starting a tmux server pass `common::sandbox_env` — a tmux server hands the
+  environment it was started with to every pane it creates later, so a server
+  started without `AW_STATE_DIR` will run `aw` against the developer's real
+  cache. `tests/dash.rs` has guards that fail if collection ever stops
+  respecting ownership.
 
 ## Key directories & env vars
 

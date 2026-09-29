@@ -50,6 +50,19 @@ pub struct PaneState {
     /// Not persisted — the on-disk value would be stale by next load.
     #[serde(skip)]
     pub label: String,
+    /// Pid of the tmux server this pane's state was written under.
+    ///
+    /// The ownership token that makes deletion safe. A process may only judge
+    /// state written by the server it is itself talking to; anything else
+    /// belongs to a different server and is none of its business. The manifest
+    /// has always worked this way (see `manifest::prune_with_live_server`) —
+    /// pane state did not, and a test harness that sandboxed tmux but not
+    /// `AW_STATE_DIR` therefore deleted a developer's live panes' state.
+    ///
+    /// `None` on files written before this existed; such a file is never
+    /// deleted, and the next hook stamps it.
+    #[serde(default)]
+    pub server_pid: Option<u32>,
     /// tmux window this pane belongs to. Panes sharing a window are one group.
     /// Not persisted; refreshed from tmux on every load.
     #[serde(skip)]
@@ -94,6 +107,7 @@ impl PaneState {
             pinned: false,
             agent_known: !agent.is_empty(),
             window_id: String::new(),
+            server_pid: None,
             lead_pane: String::new(),
         }
     }
@@ -206,6 +220,9 @@ impl Snapshot {
         //     unlink the file later if tmux says the pane is dead.
         let mut hook_state: HashMap<String, PaneState> = HashMap::new();
         let mut hook_paths: HashMap<String, std::path::PathBuf> = HashMap::new();
+        // Which tmux server wrote each file, kept separately because the state
+        // itself is moved out of `hook_state` as rows are built.
+        let mut hook_state_pids: HashMap<String, Option<u32>> = HashMap::new();
         if let Ok(read) = std::fs::read_dir(&panes_dir) {
             for d in read.flatten() {
                 if d.path().extension().map_or(true, |e| e != "json") {
@@ -213,6 +230,7 @@ impl Snapshot {
                 }
                 if let Ok(s) = PaneState::read(&d.path()) {
                     hook_paths.insert(s.pane_id.clone(), d.path());
+                    hook_state_pids.insert(s.pane_id.clone(), s.server_pid);
                     hook_state.insert(s.pane_id.clone(), s);
                 }
             }
@@ -238,6 +256,7 @@ impl Snapshot {
                 // tick — a fully stamped or fully hooked server should pay
                 // nothing. (Skipping it also keeps first paint quick enough for
                 // the sidebar test's window, which is how the cost surfaced.)
+                let live_server_pid = crate::dash::tmux::server_pid();
                 let needs_hints = panes.iter().any(|tp| {
                     tp.session.starts_with("aw-")
                         && tp.aw_agent.is_empty()
@@ -322,6 +341,9 @@ impl Snapshot {
                             agent_known: agent_for(tp, &hints).is_some(),
                             window_id: tp.window_id.clone(),
                             lead_pane: String::new(),
+                            // Built from tmux, not from a file, so it is by
+                            // definition owned by the server we are talking to.
+                            server_pid: live_server_pid,
                         },
                     };
                     entries.push(row);
@@ -342,7 +364,16 @@ impl Snapshot {
                         // and the agent then looked idle forever, because
                         // nothing rebuilds a deleted file until the next hook.
                         // Deletion is irreversible, so make tmux say it twice.
-                        if should_drop(pane_id, &live_ids, crate::dash::tmux::pane_is_gone) {
+                        let recorded = hook_state_pids.get(pane_id).copied().flatten();
+                        if should_drop(
+                            pane_id,
+                            recorded,
+                            live_server_pid,
+                            &live_ids,
+                            crate::dash::tmux::pane_is_gone,
+                            pid_is_alive,
+                            false, // automatic path: never guess about unstamped files
+                        ) {
                             let _ = std::fs::remove_file(path);
                             if let Some(ref pdir) = parked_dir {
                                 let _ = std::fs::remove_file(pdir.join(pane_id));
@@ -533,26 +564,82 @@ fn pane_ordinal(pane_id: &str) -> u64 {
 ///
 /// Only when it is missing from the bulk listing *and* a second, per-pane
 /// question confirms it. Pure in the confirmation so the rule is testable.
-fn should_drop(
+pub(crate) fn should_drop(
     pane_id: &str,
+    recorded_pid: Option<u32>,
+    live_pid: Option<u32>,
     live_ids: &std::collections::HashSet<String>,
     confirm_gone: impl Fn(&str) -> bool,
+    pid_alive: impl Fn(u32) -> bool,
+    collect_unstamped: bool,
 ) -> bool {
     if live_ids.contains(pane_id) {
         return false;
     }
-    if confirm_gone(pane_id) {
-        audit(&format!("drop {} (listing={} panes, tmux agrees)", pane_id, live_ids.len()));
-        return true;
+    match recorded_pid {
+        // Written by the server we are talking to: ours to judge. Still ask
+        // tmux about this pane specifically, because absence from one bulk
+        // listing is a suspicion and deletion is irreversible.
+        Some(p) if Some(p) == live_pid => {
+            if confirm_gone(pane_id) {
+                audit(&format!("drop {} (own server {}, tmux agrees)", pane_id, p));
+                return true;
+            }
+            audit(&format!(
+                "KEEP {} — absent from a {}-pane listing but tmux says it is alive",
+                pane_id,
+                live_ids.len()
+            ));
+            false
+        }
+        // Another server wrote it and that server is still running. Not ours to
+        // judge, at any cost: this is the case where a test harness, or any
+        // process pointed at a different tmux, would otherwise wipe a live
+        // session's state.
+        Some(p) if pid_alive(p) => {
+            audit(&format!(
+                "KEEP {} — owned by live tmux server {} (we are on {:?})",
+                pane_id, p, live_pid
+            ));
+            false
+        }
+        // The server that wrote it is gone, so nothing can be waiting on it.
+        Some(p) => {
+            audit(&format!("drop {} (server {} is gone)", pane_id, p));
+            true
+        }
+        // Pre-dates the ownership stamp, so we cannot tell whose it is. The
+        // automatic path keeps it: a stale file costs a few bytes, a wrong
+        // delete costs an agent's visible history, and the next hook stamps it.
+        // `aw dash gc` is a person asking for a clean-up, so there it is fair
+        // game once tmux confirms the pane is gone — otherwise legacy files for
+        // panes that will never fire another hook would linger forever.
+        None if collect_unstamped && confirm_gone(pane_id) => {
+            audit(&format!("drop {} (unstamped, explicit gc, tmux agrees)", pane_id));
+            true
+        }
+        None => {
+            audit(&format!("KEEP {} — no owning server recorded", pane_id));
+            false
+        }
     }
-    // The listing and tmux disagree about the same pane. Whatever makes this
-    // happen is what was silently destroying live agents' state.
-    audit(&format!(
-        "KEEP {} — absent from a {}-pane listing but tmux says it is alive",
-        pane_id,
-        live_ids.len()
-    ));
-    false
+}
+
+/// Is a pid still a running process? Used only to decide whether another tmux
+/// server still owns some state, so a spawn per candidate is fine.
+///
+/// `ps -p`, not `kill -0`: `kill` also fails with EPERM for a live process owned
+/// by someone else, which would report it dead and hand us permission to delete
+/// its state. `ps` answers the question actually being asked — does this pid
+/// exist — whoever owns it.
+pub(crate) fn pid_is_alive(pid: u32) -> bool {
+    std::process::Command::new("ps")
+        .args(["-p", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(true) // can't tell -> assume alive, i.e. don't delete
 }
 
 /// The agent running in a pane we have no hook state for, if we can know it.
@@ -683,17 +770,65 @@ mod tests {
         assert!(e[0].is_lead());
     }
 
+    /// The invariant that makes the destructive path safe: a process may only
+    /// collect state written by the tmux server it is itself talking to.
+    ///
+    /// The scenario these guard is real. A test harness sandboxed tmux but not
+    /// `AW_STATE_DIR`, so `aw` ran against a 2-pane private server while
+    /// pointed at a developer's real cache, and deleted the state for every one
+    /// of their live panes. Env hygiene fixed that instance; this rule makes the
+    /// whole class impossible, however a future caller is misconfigured.
     #[test]
-    fn should_drop_needs_both_the_listing_and_a_confirmation() {
+    fn state_owned_by_another_live_server_is_never_collected() {
         let live: HashSet<String> = ["%1".to_string()].into();
-        // Present in the listing: never dropped, whatever the confirmation says.
-        assert!(!should_drop("%1", &live, |_| true));
-        // Absent and confirmed gone: drop.
-        assert!(should_drop("%2", &live, |_| true));
-        // Absent but tmux won't confirm — a short or failed listing. Keep it:
-        // this is the case that was silently destroying live panes' state.
-        assert!(!should_drop("%2", &live, |_| false));
-        // And both outcomes leave a breadcrumb, since the audit path runs here.
+        // We are talking to server 222. The file was written by 111, which is
+        // still running — a real session's state. Never ours to delete, even
+        // though our tmux happily confirms the pane is not on *our* server.
+        assert!(!should_drop("%44", Some(111), Some(222), &live, |_| true, |_| true, false));
+    }
+
+    #[test]
+    fn state_from_a_dead_server_is_collected() {
+        let live: HashSet<String> = HashSet::new();
+        // Written by 111, which no longer exists: nothing can be waiting on it.
+        assert!(should_drop("%44", Some(111), Some(222), &live, |_| false, |_| false, false));
+    }
+
+    #[test]
+    fn own_server_still_needs_tmux_to_confirm() {
+        let live: HashSet<String> = ["%1".to_string()].into();
+        // Same server, pane absent and confirmed gone: collect.
+        assert!(should_drop("%2", Some(222), Some(222), &live, |_| true, |_| true, false));
+        // Same server, but tmux says the pane is alive: a short listing. Keep.
+        assert!(!should_drop("%2", Some(222), Some(222), &live, |_| false, |_| true, false));
+        // Present in the listing: never touched, whatever else is true.
+        assert!(!should_drop("%1", Some(222), Some(222), &live, |_| true, |_| true, false));
+    }
+
+    #[test]
+    fn unstamped_files_are_kept_rather_than_guessed_about() {
+        let live: HashSet<String> = HashSet::new();
+        // Written before ownership was recorded. A stale file costs bytes; a
+        // wrong delete costs an agent's visible history. The next hook stamps it.
+        assert!(!should_drop("%2", None, Some(222), &live, |_| true, |_| true, false));
+        // But `aw dash gc`, which a person ran on purpose, may clean it.
+        assert!(should_drop("%2", None, Some(222), &live, |_| true, |_| true, true));
+    }
+
+    #[test]
+    fn an_unknowable_pid_is_treated_as_alive() {
+        let live: HashSet<String> = HashSet::new();
+        // `pid_alive` could not tell. Refuse to delete on a maybe.
+        assert!(!should_drop("%2", Some(111), Some(222), &live, |_| true, |_| true, false));
+    }
+
+    #[test]
+    fn with_no_live_server_nothing_owned_by_a_live_one_is_touched() {
+        let live: HashSet<String> = HashSet::new();
+        // We could not determine our own server pid. A file owned by a running
+        // server stays; one owned by a dead server goes.
+        assert!(!should_drop("%2", Some(111), None, &live, |_| true, |_| true, false));
+        assert!(should_drop("%3", Some(111), None, &live, |_| true, |_| false, false));
     }
 
     #[test]

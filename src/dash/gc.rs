@@ -9,6 +9,7 @@ use crate::dash::{panes_dir, parked_dir, tmux};
 /// Returns the number of stale files removed.
 pub fn run() -> Result<usize> {
     let live: HashSet<String> = tmux::list_pane_ids().into_iter().collect();
+    let live_pid = tmux::server_pid();
 
     let mut removed = 0;
 
@@ -29,11 +30,23 @@ pub fn run() -> Result<usize> {
             if live.is_empty() {
                 continue;
             }
-            // Same rule as the dashboard's auto-gc: a pane absent from the
-            // bulk listing only counts as dead once tmux confirms it for that
-            // pane specifically. Deleting live panes' state on a short listing
-            // is silent and unrecoverable.
-            if !live.contains(&stem) && tmux::pane_is_gone(&stem) {
+            // Exactly the dashboard's rule, via the same function: only state
+            // written by the tmux server we are talking to may be collected,
+            // and only once tmux confirms that pane specifically is gone. One
+            // decision point, so the explicit command can never be laxer than
+            // the automatic one.
+            let recorded = crate::dash::state::PaneState::read(&path)
+                .ok()
+                .and_then(|s| s.server_pid);
+            if crate::dash::state::should_drop(
+                &stem,
+                recorded,
+                live_pid,
+                &live,
+                tmux::pane_is_gone,
+                crate::dash::state::pid_is_alive,
+                true, // explicit request: also clean up pre-stamp leftovers
+            ) {
                 if std::fs::remove_file(&path).is_ok() {
                     removed += 1;
                 }

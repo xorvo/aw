@@ -8,7 +8,7 @@ mod common;
 
 use std::process::Command;
 
-use common::{aw_bin, TestEnv};
+use common::{capture, aw_bin, TestEnv};
 
 /// Run `aw <args>` with $TMUX_PANE set so the hook path activates. We
 /// can't reuse `env.run` directly because that one env_clears (no `TMUX_PANE`).
@@ -266,4 +266,110 @@ fn dash_park_excludes_from_status_counts() {
     )
     .into_owned();
     assert!(!after.contains("1 waiting"), "parked panes should be excluded: {}", after);
+}
+
+// ---- the destructive path, guarded by tmux-server ownership ----
+
+/// Write a pane state file by hand, stamped as owned by `server_pid`.
+fn seed_state(env: &TestEnv, pane: &str, server_pid: Option<u32>) -> std::path::PathBuf {
+    let dir = env.state_dir.join("panes");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{}.json", pane));
+    let pid = match server_pid {
+        Some(p) => p.to_string(),
+        None => "null".to_string(),
+    };
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{"schema_version":1,"pane_id":"{pane}","session":"aw-x","workspace":"x",
+                "cwd":"/tmp","agent":"claude","status":"working","last_event":"PreToolUse",
+                "last_activity":1790000000,"last_prompt":"","session_id":"sid",
+                "server_pid":{pid}}}"#
+        ),
+    )
+    .unwrap();
+    path
+}
+
+/// A tmux server inside the sandbox, on the default socket name so `aw` finds
+/// it. Collection only runs when tmux answers, so without this the guards below
+/// would pass for the wrong reason.
+struct SandboxServer {
+    tmpdir: std::path::PathBuf,
+}
+
+impl SandboxServer {
+    fn start(env: &TestEnv) -> Option<Self> {
+        let ok = Command::new("tmux")
+            .args(["new-session", "-d", "-s", "probe", "-x", "80", "-y", "24"])
+            .envs(common::sandbox_env(env))
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        ok.then(|| Self { tmpdir: env.tmp.path().to_path_buf() })
+    }
+}
+
+impl Drop for SandboxServer {
+    fn drop(&mut self) {
+        let _ = Command::new("tmux")
+            .args(["kill-server"])
+            .env("TMUX_TMPDIR", &self.tmpdir)
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+/// The regression that cost a user their agents' visible history: a process
+/// pointed at someone else's state directory must not collect it, no matter
+/// what its own tmux says about those pane ids.
+///
+/// Pid 1 is launchd — always running, never a tmux server — so it stands in for
+/// "some other live server owns this".
+#[test]
+fn collection_respects_which_tmux_server_owns_the_state() {
+    let env = TestEnv::new();
+    let Some(_server) = SandboxServer::start(&env) else {
+        eprintln!("skipping: tmux unavailable");
+        return;
+    };
+    let foreign = seed_state(&env, "%9101", Some(1));
+    let orphan = seed_state(&env, "%9102", Some(999_999)); // no such process
+    let unstamped = seed_state(&env, "%9103", None);
+
+    // Any command that loads a snapshot runs the collector.
+    let cap = capture(&env, &env.run(&["dash", "json"]));
+    assert_eq!(cap.exit, 0, "{}", cap.stderr);
+
+    assert!(
+        foreign.exists(),
+        "state owned by a live server was deleted — the bug that wiped a real cache"
+    );
+    assert!(
+        unstamped.exists(),
+        "state with no recorded owner was deleted; it should be kept and re-stamped"
+    );
+    assert!(
+        !orphan.exists(),
+        "state owned by a dead server should still be collected, or the cache grows forever"
+    );
+}
+
+/// The explicit command must be no laxer than the automatic one.
+#[test]
+fn dash_gc_respects_ownership_too() {
+    let env = TestEnv::new();
+    let Some(_server) = SandboxServer::start(&env) else {
+        eprintln!("skipping: tmux unavailable");
+        return;
+    };
+    let foreign = seed_state(&env, "%9201", Some(1));
+    let orphan = seed_state(&env, "%9202", Some(999_999));
+
+    let cap = capture(&env, &env.run(&["dash", "gc"]));
+    assert_eq!(cap.exit, 0, "{}", cap.stderr);
+
+    assert!(foreign.exists(), "aw dash gc deleted another server's state");
+    assert!(!orphan.exists(), "aw dash gc left a dead server's state behind");
 }

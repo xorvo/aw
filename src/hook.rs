@@ -53,6 +53,9 @@ pub fn run(agent: AgentKind, event: &str, prompt: Option<String>) -> Result<()> 
     state.status = status;
     state.last_event = event.to_string();
     state.last_activity = crate::dash::state::now_epoch();
+    // Stamp the owning tmux server: only a process on this same server may ever
+    // garbage-collect this file.
+    state.server_pid = tmux::server_pid();
 
     // CLI flag wins; then stdin payload; otherwise keep prior.
     if let Some(p) = prompt {

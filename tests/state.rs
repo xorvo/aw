@@ -35,6 +35,17 @@ struct PrivateTmux {
 }
 
 impl PrivateTmux {
+    /// Pid of this server, for stamping fixtures as owned by it. Collection is
+    /// gated on that ownership, so an unstamped fixture is kept on purpose and
+    /// would prove nothing.
+    fn pid(&self) -> Option<u32> {
+        let out = Command::new("tmux")
+            .args(["-S", self.socket_path.to_str().unwrap(), "list-sessions", "-F", "#{pid}"])
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout).lines().next()?.trim().parse().ok()
+    }
+
     fn spawn(env: &TestEnv, session: &str) -> Self {
         // /tmp/awts-<pid>-<random>.sock — short on purpose. tmux -S takes
         // a full path, bypassing the $TMUX_TMPDIR/tmux-<uid>/ prefix.
@@ -183,7 +194,13 @@ impl Drop for PrivateTmux {
 
 /// Drop a state file for a fake pane id directly (bypassing the hook). Used
 /// to seed the bug scenarios without coordinating with a private tmux.
-fn seed_state_file(env: &TestEnv, pane_id: &str, workspace: &str, agent: &str) {
+fn seed_state_file(
+    env: &TestEnv,
+    server: Option<&PrivateTmux>,
+    pane_id: &str,
+    workspace: &str,
+    agent: &str,
+) {
     let dir = env.state_dir.join("panes");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{}.json", pane_id));
@@ -198,6 +215,10 @@ fn seed_state_file(env: &TestEnv, pane_id: &str, workspace: &str, agent: &str) {
         "last_event": "UserPromptSubmit",
         "last_activity": 1700000000u64,
         "last_prompt": "stale",
+        // Stamped as owned by the tmux server this test is talking to.
+        // Collection is gated on that ownership, so an unstamped fixture would
+        // be kept on purpose and prove nothing.
+        "server_pid": server.and_then(|s| s.pid()),
     });
     std::fs::write(path, body.to_string()).unwrap();
 }
@@ -225,7 +246,7 @@ fn dead_pane_state_file_is_filtered_out_and_deleted() {
 
     // Live pane = aw-realws's first pane. Plus a stale state file pointing
     // to %999 (which doesn't exist on this private server).
-    seed_state_file(&env, "%999", "ghost", "claude");
+    seed_state_file(&env, Some(&server), "%999", "ghost", "claude");
     let stale_path = env.state_dir.join("panes/%999.json");
     assert!(stale_path.is_file(), "precondition");
 
@@ -263,7 +284,7 @@ fn live_pane_overrides_stale_session_and_cwd_from_state_file() {
     let live_pane = server.first_pane_id("aw-current");
     // Seed a state file claiming the pane belongs to a different workspace
     // and a stale cwd. The dashboard should report what tmux says now.
-    seed_state_file(&env, &live_pane, "old-workspace", "claude");
+    seed_state_file(&env, Some(&server), &live_pane, "old-workspace", "claude");
 
     let snapshot = dash_json(&env, &server);
     let entry = snapshot
@@ -298,8 +319,10 @@ fn tmux_unavailable_falls_back_to_state_files() {
     // Seed two state files; don't start any private tmux server. The
     // sandbox's TMUX_TMPDIR points at env.tmp.path() (which exists but
     // contains no tmux server), so tmux list-panes will exit non-zero.
-    seed_state_file(&env, "%1", "alpha", "claude");
-    seed_state_file(&env, "%2", "beta", "codex");
+    // No server, so no owner to stamp — and no collection either, which is
+    // exactly what this test is about.
+    seed_state_file(&env, None, "%1", "alpha", "claude");
+    seed_state_file(&env, None, "%2", "beta", "codex");
 
     let out = env.run(&["dash", "json"]);
     assert!(
@@ -336,7 +359,7 @@ fn dead_panes_parked_sentinels_are_also_cleaned() {
     let env = TestEnv::new();
     let server = PrivateTmux::spawn(&env, "aw-x");
 
-    seed_state_file(&env, "%888", "ghost", "claude");
+    seed_state_file(&env, Some(&server), "%888", "ghost", "claude");
     let park_dir = env.state_dir.join("parked");
     std::fs::create_dir_all(&park_dir).unwrap();
     std::fs::write(park_dir.join("%888"), "").unwrap();
@@ -385,7 +408,7 @@ fn empty_tmux_list_does_not_wipe_hook_files() {
     // returns 0 panes even though tmux itself is healthy and has 1 pane.
     let server = PrivateTmux::spawn(&env, "not-aw-prefixed");
 
-    seed_state_file(&env, "%50", "alpha", "claude");
+    seed_state_file(&env, Some(&server), "%50", "alpha", "claude");
     let path = env.state_dir.join("panes/%50.json");
     assert!(path.is_file(), "precondition");
 
@@ -398,7 +421,7 @@ fn empty_tmux_list_does_not_wipe_hook_files() {
     // session and re-run.
     let _ = server.raw(&["kill-session", "-t", "not-aw-prefixed"]);
 
-    seed_state_file(&env, "%51", "beta", "codex");
+    seed_state_file(&env, Some(&server), "%51", "beta", "codex");
     let path2 = env.state_dir.join("panes/%51.json");
     assert!(path2.is_file());
 
@@ -425,7 +448,7 @@ fn live_panes_hook_status_is_preserved_across_loads() {
     // Seed a state file marking this pane as `waiting`. After a load,
     // tmux should refresh ground-truth fields but `status: waiting` must
     // stick — that's the whole point of hook state.
-    seed_state_file(&env, &live_pane, "hooked", "claude");
+    seed_state_file(&env, Some(&server), &live_pane, "hooked", "claude");
     // Override the seeded status to waiting via a manual edit (seeder
     // writes "working").
     let path = env.state_dir.join(format!("panes/{}.json", live_pane));

@@ -101,6 +101,14 @@ Every decision is appended to `<state>/gc.log` (self-capping at 64 KB):
 1790065878 pid=17497 KEEP %17 — absent from a 2-pane listing but tmux says it is alive
 ```
 
+Collection is gated on ownership before any of that: each state file records the
+pid of the tmux server that wrote it, and a process only collects files stamped
+with the server it is itself talking to. Files owned by another *running* server
+are never touched, files owned by a dead one are cleaned up, and files with no
+owner recorded are kept until a hook re-stamps them. That mirrors the rule the
+resurrect manifest has always used, and it is what stops a process pointed at
+the wrong state directory from deleting a live session's history.
+
 A `KEEP` line means the bulk listing and tmux disagreed about the same pane.
 That should never happen, and it is exactly the anomaly that used to destroy
 state silently, so if files still go missing this log names the process and the

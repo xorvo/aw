@@ -291,6 +291,7 @@ fn seeded_pane_state(
     st.cwd = p.cwd.clone();
     st.session_id = p.session_id.clone();
     st.last_activity = p.last_activity;
+    st.server_pid = crate::dash::tmux::server_pid();
     st
 }
 

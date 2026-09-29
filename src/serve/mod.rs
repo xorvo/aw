@@ -32,6 +32,32 @@ const SCREEN_POLL: Duration = Duration::from_millis(100);
 const UPLOAD_MAX: usize = 25 * 1024 * 1024;
 
 const INDEX_HTML: &str = include_str!("assets/index.html");
+
+/// `index.html` with the status palette filled in from `dash::render`.
+///
+/// The page used to hard-code its own colours, and drifted: working was green on
+/// the phone and amber in the popup, waiting amber here and red there. Deriving
+/// them from the one Rust definition means a change to the palette reaches every
+/// surface, and no future edit can reintroduce a second opinion.
+fn index_html() -> &'static str {
+    use crate::dash::render::{shown_halo, shown_hex, Shown};
+    static PAGE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PAGE.get_or_init(|| {
+        let mut out = INDEX_HTML.to_string();
+        for (name, state) in [
+            ("WORKING", Shown::Working),
+            ("WAITING", Shown::Waiting),
+            ("STALLED", Shown::Stalled),
+            ("IDLE", Shown::Idle),
+        ] {
+            out = out
+                .replace(&format!("@ST_{}@", name), &shown_hex(state))
+                .replace(&format!("@ST_{}_HALO@", name), &shown_halo(state));
+        }
+        debug_assert!(!out.contains("@ST_"), "unsubstituted palette placeholder");
+        out
+    })
+}
 const APP_JS: &str = include_str!("assets/app.js");
 
 struct ServeState {
@@ -118,7 +144,7 @@ fn handle(mut req: Request, state: &ServeState) {
         );
         respond(
             req,
-            Response::from_string(INDEX_HTML)
+            Response::from_string(index_html())
                 .with_header(header("Content-Type", "text/html; charset=utf-8"))
                 .with_header(header("Cache-Control", "no-cache"))
                 .with_header(header("Set-Cookie", &cookie)),
@@ -640,6 +666,28 @@ mod tests {
         assert_eq!(percent_decode("trailing%2"), "trailing%2");
         assert_eq!(percent_decode("%"), "%");
         assert_eq!(percent_decode("caf%C3%A9"), "café");
+    }
+
+    /// The page must leave no placeholder behind, and must carry the same hues
+    /// the terminal uses — that drift is what this injection exists to stop.
+    #[test]
+    fn served_page_carries_the_shared_palette() {
+        use crate::dash::render::{shown_hex, Shown};
+        let page = index_html();
+        assert!(!page.contains("@ST_"), "unsubstituted palette placeholder");
+        for state in [Shown::Working, Shown::Waiting, Shown::Stalled, Shown::Idle] {
+            assert!(
+                page.contains(&shown_hex(state)),
+                "page is missing the {:?} colour {}",
+                state,
+                shown_hex(state)
+            );
+        }
+        // And no hard-coded status colour sneaking back in.
+        assert!(
+            !page.contains("background:#bc74de"),
+            "a status colour was hard-coded again instead of injected"
+        );
     }
 
     #[test]

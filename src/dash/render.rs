@@ -116,6 +116,18 @@ pub fn shown_rgb(s: Shown) -> (u8, u8, u8) {
     }
 }
 
+/// The palette as `#rrggbb`, for surfaces that speak CSS rather than ratatui.
+pub fn shown_hex(s: Shown) -> String {
+    let (r, g, b) = shown_rgb(s);
+    format!("#{:02x}{:02x}{:02x}", r, g, b)
+}
+
+/// A translucent version of the same colour, for the halo behind a status dot.
+pub fn shown_halo(s: Shown) -> String {
+    let (r, g, b) = shown_rgb(s);
+    format!("rgba({},{},{},.24)", r, g, b)
+}
+
 /// Lowercase label, shared by every surface so they can't disagree.
 pub fn shown_label(s: Shown) -> &'static str {
     match s {

@@ -63,6 +63,25 @@ longer good. It has its own glyph and colour on every surface and is counted
 separately in the header and the status line. Nothing downgrades `waiting` or
 `idle`, and a pane no hook has ever fired in has no claim to expire.
 
+### One palette
+
+Status colours are defined once, in `dash::render::shown_rgb`, and every surface
+derives from it: the popup and the sidebar convert it to a ratatui colour, and
+the phone gets it injected into the page's CSS variables when `aw serve` hands
+over `index.html`. Hard-coding a status colour in the stylesheet is a bug — a
+unit test fails if a placeholder is left unfilled or a hex creeps back in.
+
+| State | Colour | Why |
+|---|---|---|
+| waiting | red | the only one that wants you right now |
+| working | amber | busy, nothing needed from you |
+| stalled | purple | distinct from both, so it can't be misread as either |
+| idle | green | finished, all clear |
+
+They had drifted three ways before this: working was green on the phone and
+amber in the popup, waiting was amber on the phone, yellow in the sidebar and
+red in the popup.
+
 ## Spawned panes
 
 An agent that spawns helpers splits them into its own tmux window, so a window

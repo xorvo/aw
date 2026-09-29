@@ -1302,15 +1302,10 @@ fn sidebar_pane_line(p: &crate::dash::state::PaneState, selected: bool, width: u
     };
     // Derived, not recorded: a `working` latch nobody renewed is stalled, and
     // the sidebar is the one surface pinned all day where that matters most.
-    // The sidebar keeps its own palette (yellow carries attention against this
-    // background, where the popup uses red) — stalled just joins it.
+    // Colour comes from the shared palette so the sidebar, the popup and the
+    // phone all mean the same thing by the same hue.
     let shown = p.shown(crate::dash::state::now_epoch());
-    let color = match shown {
-        Shown::Waiting => Color::Yellow,
-        Shown::Working => Color::Green,
-        Shown::Stalled => Color::Magenta,
-        Shown::Idle => Color::DarkGray,
-    };
+    let color = shown_ratatui_color(shown);
     let age = humanize_age(p.last_activity);
     let parked = if p.parked {
         format!(" {}", parked_glyph())

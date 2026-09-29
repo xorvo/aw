@@ -1,6 +1,13 @@
-//! Sidebar tests. We run against a private tmux server (`-L <socket>`) so
-//! we don't disturb the host's tmux state, and tag the env so the binary's
-//! tmux calls land on that same server.
+//! Sidebar tests: the tmux-side behaviour of `aw dash sidebar` — that it
+//! splits exactly one tagged pane and re-focuses rather than duplicating.
+//! We run against a private tmux server (`-L <socket>`) so we don't disturb
+//! the host's tmux state, and tag the env so the binary's tmux calls land
+//! on that same server.
+//!
+//! What the sidebar *renders* is covered by `TestBackend` unit tests in
+//! `src/dash/tui/view.rs`. It runs a raw-mode TUI now, so driving
+//! `_sidebar-loop` through a pipe and scraping stdout — which is what the
+//! tests here used to do — no longer works.
 
 mod common;
 
@@ -170,49 +177,4 @@ fn second_invocation_focuses_existing_sidebar_does_not_split() {
     assert!(out.status.success(), "second invocation: {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(server.pane_count(&env), 2, "should not have split again");
     assert_eq!(server.sidebar_count(&env), 1, "still one tagged sidebar");
-}
-
-#[test]
-fn sidebar_render_includes_keybinding_hints() {
-    let env = TestEnv::new();
-    // Drive _sidebar-loop briefly and capture its first paint.
-    let path = format!(
-        "{}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-        env.fake_bin.display()
-    );
-    let mut child = Command::new(aw_bin())
-        .args(["_sidebar-loop"])
-        .current_dir(&env.home)
-        .env_clear()
-        .env("HOME", &env.home)
-        .env("PATH", path)
-        .env("AW_INSTALL_DIR", &env.install_dir)
-        .env("AW_WORKSPACES_DIR", &env.workspaces_dir)
-        .env("AW_BIN_DIR", &env.bin_dir)
-        .env("AW_CONFIG_FILE", &env.config_path)
-        .env("AW_STATE_DIR", &env.state_dir)
-        .env("TMUX_TMPDIR", env.tmp.path())
-        .env("LC_ALL", "en_US.UTF-8")
-        .env("LANG", "en_US.UTF-8")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(400));
-    let _ = child.kill();
-    let out = child.wait_with_output().unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    // Either at least one paint happened (look anywhere in stdout) or the
-    // process was killed mid-write and produced nothing — assert the
-    // simpler "hints appear somewhere in any paint."
-    assert!(
-        stdout.contains("prefix+a") && stdout.contains("popup"),
-        "missing prefix+a / popup hint in:\n{:?}",
-        stdout
-    );
-    assert!(
-        stdout.contains("prefix+N") && stdout.contains("next"),
-        "missing prefix+N / next hint in:\n{:?}",
-        stdout
-    );
 }

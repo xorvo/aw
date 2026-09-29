@@ -89,16 +89,21 @@ H toggle dormant         q  quit
 Other entry points:
 
 ```bash
-aw dash sidebar          # narrow always-on side pane
+aw dash sidebar          # pin a narrow always-on side pane (prefix+o)
 aw dash status-line      # one-liner for tmux's status-right
 aw dash next-ready       # one-shot: jump to oldest waiting agent
 aw dash --filter         # open straight into search mode
 ```
 
 The default tmux bindings (after `aw install tmux-bindings`) are
-`prefix + a` for the popup and `prefix + /` for filter mode. Full
-keymap, hook contract, and state schema in
-[`docs/dash.md`](docs/dash.md).
+`prefix + a` for the popup, `prefix + /` for filter mode, and
+`prefix + o` for the sidebar.
+
+The sidebar is the same dashboard pinned to the side of your session, so
+it takes the same keys — `↵` jumps, `/` filters, `p` parks — except that
+jumping leaves it open. It groups by status rather than workspace, so the
+agents waiting on you stay at the top. Full keymap, hook contract, and
+state schema in [`docs/dash.md`](docs/dash.md).
 
 ## The phone remote
 

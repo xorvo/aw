@@ -219,7 +219,7 @@ rebound to `last-window`. Rebind it after the `aw` marker block if you want
 | `aw dash status-line` | one-line summary for tmux's `status-right` |
 | `aw dash next-ready` | `switch-client` to oldest waiting / idle pane |
 | `aw dash park [--pane <id>]` | toggle parked sentinel (default: current pane) |
-| `aw dash sidebar` | spawn a 42-col side pane that auto-refreshes |
+| `aw dash sidebar` | pin a 42-col side pane: same keymap, grouped by status |
 
 ## Status-line wiring
 

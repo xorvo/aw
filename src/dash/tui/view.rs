@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use crate::dash::render::{dormant_glyph, humanize_age, parked_glyph, status_glyph};
-use crate::dash::state::{Snapshot, Status};
+use crate::dash::state::Status;
 use crate::dash::tui::app::{App, Mode, Row};
 
 pub fn render(f: &mut Frame, app: &App) {
@@ -373,6 +373,21 @@ fn line_for_row(row: &Row, selected: bool) -> Line<'static> {
                 Style::default().fg(Color::DarkGray),
             ));
             Line::from(spans)
+        }
+        Row::StatusHeader { status, count } => {
+            let (text, color) = match status {
+                Status::Waiting => ("NEEDS YOU", Color::Yellow),
+                Status::Working => ("WORKING", Color::Green),
+                Status::Idle => ("IDLE", Color::DarkGray),
+            };
+            Line::from(vec![
+                edge,
+                Span::raw(" "),
+                Span::styled(
+                    format!("{} ({})", text, count),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+            ])
         }
         Row::DormantDivider => Line::from(vec![
             edge,
@@ -777,6 +792,103 @@ mod tests {
         out
     }
 
+    /// Same buffer walk as [`render_to_string`], through the sidebar's
+    /// single-column renderer.
+    fn render_sidebar_to_string(app: &App, w: u16, h: u16) -> String {
+        let backend = TestBackend::new(w, h);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| render_sidebar(f, app)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut out = String::new();
+        for y in 0..h {
+            let mut line = String::new();
+            for x in 0..w {
+                line.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
+        out
+    }
+
+    fn sidebar_of(specs: &[(&str, &str, &str, Status, &str)]) -> App {
+        let entries = specs
+            .iter()
+            .map(|(id, ws, agent, status, prompt)| {
+                let mut p = pane(id, ws, agent);
+                p.status = *status;
+                p.last_prompt = (*prompt).into();
+                p
+            })
+            .collect();
+        App::new_sidebar(Snapshot { entries, dormant: vec![] })
+    }
+
+    #[test]
+    fn sidebar_renders_triage_sections_in_priority_order() {
+        let app = sidebar_of(&[
+            ("%1", "ws-b", "pi", Status::Idle, ""),
+            ("%2", "ws-a", "claude", Status::Working, "do a"),
+            ("%3", "ws-a", "codex", Status::Waiting, "approve this"),
+        ]);
+        let text = render_sidebar_to_string(&app, 42, 20);
+        let needs = text.find("NEEDS YOU").expect("waiting section");
+        let working = text.find("WORKING").expect("working section");
+        let idle = text.find("IDLE").expect("idle section");
+        assert!(needs < working && working < idle, "triage order:\n{text}");
+        assert!(text.contains("NEEDS YOU (1)"), "counted:\n{text}");
+        assert!(text.contains("ws-a/codex"), "workspace/agent:\n{text}");
+    }
+
+    #[test]
+    fn sidebar_shows_the_prompt_only_for_waiting_agents() {
+        let app = sidebar_of(&[
+            ("%1", "ws-a", "claude", Status::Waiting, "approve the migration"),
+            ("%2", "ws-a", "codex", Status::Working, "refactor the parser"),
+        ]);
+        let text = render_sidebar_to_string(&app, 42, 20);
+        assert!(text.contains("approve the migration"), "waiting prompt shown:\n{text}");
+        assert!(
+            !text.contains("refactor the parser"),
+            "working rows stay one line so more fit:\n{text}"
+        );
+    }
+
+    #[test]
+    fn sidebar_hints_at_its_own_keys_not_the_popups() {
+        // The old read-only sidebar pointed at `prefix+a` because it could
+        // not act. It can now, so the footer advertises its own keys.
+        let app = sidebar_of(&[("%1", "ws", "claude", Status::Waiting, "x")]);
+        let text = render_sidebar_to_string(&app, 42, 20);
+        assert!(text.contains("jump"), "footer advertises jump:\n{text}");
+        assert!(text.contains("filter"), "footer advertises filter:\n{text}");
+        assert!(!text.contains("prefix+a"), "stale popup hint:\n{text}");
+    }
+
+    #[test]
+    fn sidebar_never_overflows_its_pane_width() {
+        // Long names must truncate, not wrap: a wrapped row would desync
+        // every line below it from the selection highlight.
+        let app = sidebar_of(&[(
+            "%1",
+            "an-extremely-long-workspace-name-here",
+            "claude-with-a-long-name",
+            Status::Waiting,
+            "and a very long prompt that would certainly overflow this pane",
+        )]);
+        let text = render_sidebar_to_string(&app, 42, 20);
+        for (i, r) in text.lines().enumerate() {
+            assert!(r.chars().count() <= 42, "row {i} overflows ({}): {:?}", r.chars().count(), r);
+        }
+    }
+
+    #[test]
+    fn sidebar_renders_an_empty_state_rather_than_a_blank_pane() {
+        let app = App::new_sidebar(Snapshot { entries: vec![], dormant: vec![] });
+        let text = render_sidebar_to_string(&app, 42, 12);
+        assert!(text.contains("no agents yet"), "empty state:\n{text}");
+    }
+
     #[test]
     fn popup_renders_dormant_section_after_active() {
         let app = App::new(Snapshot {
@@ -1045,53 +1157,176 @@ mod tests {
 
 /// Plain-text rendering for the sidebar pane. One workspace block per group,
 /// pane lines indented. Width self-trims at ~38 cols.
-pub fn render_sidebar_text(snap: &Snapshot) -> String {
-    let mut out = String::new();
-    let (working, waiting, idle) = snap.counts();
-    // One space between glyph and count, two spaces between groups so the
-    // columns line up regardless of whether the glyph is rendered as 1 or 2
-    // cells wide.
-    out.push_str(&format!(
-        " {} {}  {} {}  {} {}\n",
-        status_glyph(Status::Working), working,
-        status_glyph(Status::Waiting), waiting,
-        status_glyph(Status::Idle),    idle,
-    ));
-    out.push_str(" ───────────────────────────────\n");
-    if snap.entries.is_empty() {
-        out.push_str(" no agents tracked\n");
+/// Sidebar renderer: one narrow column, status-grouped.
+///
+/// Deliberately not the popup's two-pane layout. At ~42 columns a detail
+/// pane leaves nothing for the list, and the sidebar answers a different
+/// question anyway — *who needs me* — so it spends its width on the
+/// waiting agents' prompts instead.
+pub fn render_sidebar(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(area);
+
+    let title = if app.mode == Mode::Filter {
+        format!(" /{} ", app.filter)
     } else {
-        let mut by_ws: std::collections::BTreeMap<String, Vec<&crate::dash::state::PaneState>> =
-            std::collections::BTreeMap::new();
-        for e in &snap.entries {
-            by_ws.entry(e.workspace.clone()).or_default().push(e);
-        }
-        for (ws, panes) in by_ws {
-            let label = if ws.is_empty() { "(no workspace)".into() } else { ws };
-            out.push_str(&format!(" ▾ {}\n", label));
-            for p in panes {
-                let parked = if p.parked {
-                    format!(" {}", parked_glyph())
-                } else {
-                    String::new()
-                };
-                out.push_str(&format!(
-                    "    {} {:<7} {:<4}{}\n",
-                    status_glyph(p.status),
-                    truncate(&p.agent, 7),
-                    humanize_age(p.last_activity),
-                    parked,
-                ));
+        let (w, wt, i) = app.snapshot.agent_counts();
+        format!(
+            " {} {}  {} {}  {} {} ",
+            status_glyph(Status::Working), w,
+            status_glyph(Status::Waiting), wt,
+            status_glyph(Status::Idle), i,
+        )
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .padding(Padding::new(0, 0, 0, 0))
+        .title(title)
+        .title_style(
+            Style::default()
+                .fg(if app.mode == Mode::Filter { Color::Yellow } else { Color::Cyan })
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(chunks[0]);
+    f.render_widget(block, chunks[0]);
+
+    if app.rows.is_empty() {
+        let empty = if app.filter.is_empty() {
+            "no agents yet"
+        } else {
+            "no matches"
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" {}", empty),
+                Style::default().fg(Color::DarkGray),
+            ))),
+            inner,
+        );
+        render_sidebar_hint(f, chunks[1], app);
+        return;
+    }
+
+    let width = inner.width as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    // Row index -> first rendered line, so the scroll math can keep the
+    // selection visible even though a waiting row occupies two lines.
+    let mut line_of_row: Vec<usize> = Vec::with_capacity(app.rows.len());
+    for (i, row) in app.rows.iter().enumerate() {
+        line_of_row.push(lines.len());
+        let selected = i == app.selected;
+        match row {
+            Row::Pane(p) => {
+                lines.push(sidebar_pane_line(p, selected, width));
+                // Context only where it earns its place: a waiting agent
+                // is one you are about to switch to, and the prompt is
+                // how you tell which one. Working/idle rows stay single
+                // so more of them fit.
+                if p.status == Status::Waiting && !p.last_prompt.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::raw("   "),
+                        Span::styled(
+                            truncate(&p.last_prompt, width.saturating_sub(4)),
+                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                        ),
+                    ]));
+                }
             }
+            // A rule between sections: the headings are short, so without
+            // one the eye reads the whole column as a single list.
+            Row::StatusHeader { .. } if !lines.is_empty() => {
+                lines.push(Line::from(Span::styled(
+                    format!(" {}", "─".repeat(width.saturating_sub(2))),
+                    Style::default().fg(Color::DarkGray),
+                )));
+                lines.push(line_for_row(row, selected));
+            }
+            other => lines.push(line_for_row(other, selected)),
         }
     }
-    // Hint footer: this pane is read-only by design — point users at the
-    // popup for navigation and at next-ready for one-keystroke triage.
-    // Always emitted so the affordance is discoverable even on first run
-    // when no agents have fired hooks yet.
-    out.push('\n');
-    out.push_str(" ───────────────────────────────\n");
-    out.push_str(" prefix+a → popup (j/k jump)\n");
-    out.push_str(" prefix+N → next waiting agent\n");
-    out
+
+    // Keep the selected row in view.
+    let height = inner.height as usize;
+    let sel_line = line_of_row.get(app.selected).copied().unwrap_or(0);
+    let mut off = app.scroll_offset.get() as usize;
+    if sel_line < off {
+        off = sel_line;
+    } else if height > 0 && sel_line >= off + height {
+        off = sel_line + 1 - height;
+    }
+    let max_off = lines.len().saturating_sub(height);
+    off = off.min(max_off);
+    app.scroll_offset.set(off as u16);
+
+    let visible: Vec<Line<'static>> = lines.into_iter().skip(off).take(height.max(1)).collect();
+    f.render_widget(Paragraph::new(visible), inner);
+    render_sidebar_hint(f, chunks[1], app);
 }
+
+/// One agent line: `▌▲ workspace/agent      12s`.
+fn sidebar_pane_line(p: &crate::dash::state::PaneState, selected: bool, width: usize) -> Line<'static> {
+    let edge = if selected {
+        Span::styled("▌", Style::default().fg(Color::Cyan))
+    } else {
+        Span::raw(" ")
+    };
+    let color = match p.status {
+        Status::Waiting => Color::Yellow,
+        Status::Working => Color::Green,
+        Status::Idle => Color::DarkGray,
+    };
+    let age = humanize_age(p.last_activity);
+    let parked = if p.parked {
+        format!(" {}", parked_glyph())
+    } else {
+        String::new()
+    };
+    // Budget: edge + glyph + space + name ... age + parked, right-aligned.
+    let fixed = 3 + age.chars().count() + parked.chars().count() + 1;
+    let name_budget = width.saturating_sub(fixed).max(6);
+    let name = if p.workspace.is_empty() {
+        p.agent.clone()
+    } else {
+        format!("{}/{}", p.workspace, p.agent)
+    };
+    let name = truncate(&name, name_budget);
+    let pad = name_budget.saturating_sub(name.chars().count());
+    Line::from(vec![
+        edge,
+        Span::styled(status_glyph(p.status).to_string(), Style::default().fg(color)),
+        Span::raw(" "),
+        Span::styled(
+            name,
+            Style::default()
+                .fg(if selected { Color::White } else { Color::Gray })
+                .add_modifier(if p.status == Status::Waiting {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        ),
+        Span::raw(" ".repeat(pad + 1)),
+        Span::styled(age, Style::default().fg(Color::DarkGray)),
+        Span::styled(parked, Style::default().fg(Color::Blue)),
+    ])
+}
+
+fn render_sidebar_hint(f: &mut Frame, area: Rect, app: &App) {
+    let hint = match app.mode {
+        Mode::Filter => "enter/esc done",
+        _ => "↵ jump  / filter  p park  q close",
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {}", truncate(hint, area.width.saturating_sub(1) as usize)),
+            Style::default().fg(Color::DarkGray),
+        ))),
+        area,
+    );
+}
+

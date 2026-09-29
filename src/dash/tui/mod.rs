@@ -7,9 +7,12 @@
 //!   right. Keymap: j/k navigate, Enter jumps via `tmux switch-client`,
 //!   `/` filters, `p` parks, `n` next-ready, `r` refresh, Tab toggles
 //!   preview, `Q` shows the phone-pairing QR overlay, q quits.
-//! - **Sidebar** (`aw dash sidebar` / `_sidebar-loop`): same renderer in a
-//!   narrow single-column layout, redrawn on a 2 s timer. No interactive
-//!   keys — kill the pane to dismiss.
+//! - **Sidebar** (`aw dash sidebar` / `_sidebar-loop`): the same `App` and
+//!   keymap in a narrow single-column layout, pinned in a tmux pane. Rows
+//!   are grouped by status rather than workspace (waiting first) because
+//!   it answers "who needs me" rather than "what is in this workspace".
+//!   Fully interactive, with one difference from the popup: jumping does
+//!   not close it.
 
 pub mod app;
 pub mod keymap;
@@ -17,7 +20,7 @@ pub mod preview;
 pub mod switch;
 pub mod view;
 
-use std::io::{stdout, Write};
+use std::io::stdout;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -222,17 +225,74 @@ fn tmux_capture(args: &[&str]) -> Option<String> {
 /// `aw _sidebar-loop` — long-running redraw loop. Hand-renders to stdout
 /// (no alt-screen), so it lives nicely inside a regular tmux pane.
 pub fn run_sidebar_loop() -> Result<()> {
-    let mut last_state = None::<String>;
+    enable_raw_mode()?;
+    let mut out = stdout();
+    execute!(out, EnterAlternateScreen, Hide)?;
+
+    let backend = CrosstermBackend::new(out);
+    let mut terminal = Terminal::new(backend)?;
+
+    let result = sidebar_loop(&mut terminal);
+
+    disable_raw_mode().ok();
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, Show).ok();
+    terminal.show_cursor().ok();
+    result
+}
+
+/// The sidebar's event loop.
+///
+/// Shares `App` and `keymap` with the popup, with one deliberate
+/// difference: **the popup exits to act, the sidebar acts and stays**.
+/// `aw dash` tears down its alternate screen and then jumps, because it
+/// is a transient overlay. A pinned sidebar that closed itself every time
+/// you jumped would be useless, so Jump/NextReady switch the tmux client
+/// from inside the loop and keep running. Only `q` ends it.
+fn sidebar_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result<()> {
+    let mut app = App::new_sidebar(Snapshot::load()?);
+    let mut last_reload = Instant::now();
+
     loop {
-        let snap = Snapshot::load().unwrap_or(Snapshot { entries: vec![], dormant: vec![] });
-        let rendered = view::render_sidebar_text(&snap);
-        // Only repaint when content changed — avoids flicker.
-        if last_state.as_deref() != Some(rendered.as_str()) {
-            // Clear screen + move home.
-            print!("\x1b[2J\x1b[H{}", rendered);
-            stdout().flush().ok();
-            last_state = Some(rendered);
+        terminal.draw(|f| view::render_sidebar(f, &app))?;
+
+        if poll(Duration::from_millis(250))? {
+            if let Event::Key(key) = read()? {
+                match keymap::on_key(&mut app, key) {
+                    Action::Quit => return Ok(()),
+                    Action::Jump(pane) => tmux::switch_to_pane(&pane),
+                    Action::NextReady => {
+                        if let Some(pane) = crate::dash::pick_next_ready_for(&app.snapshot) {
+                            tmux::switch_to_pane(&pane);
+                        }
+                    }
+                    // Park/Pin/Refresh mutate sentinels and reload in
+                    // place; they never ask the caller to exit, so the
+                    // returned action is discarded.
+                    other @ (Action::Park(_)
+                    | Action::Refresh
+                    | Action::TogglePin(_)
+                    | Action::OpenWorkspace(_)
+                    | Action::CreateWorkspace { .. }) => {
+                        if let Some(after) = app.apply(other) {
+                            // `apply` only hands back Jump/OpenWorkspace
+                            // follow-ups; honour them without exiting.
+                            match after {
+                                Action::Jump(pane) => tmux::switch_to_pane(&pane),
+                                Action::OpenWorkspace(name) => {
+                                    let _ = crate::workspace::start::open_or_attach_session(&name);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Action::Continue => {}
+                }
+            }
         }
-        std::thread::sleep(Duration::from_millis(2000));
+
+        if last_reload.elapsed() >= Duration::from_millis(1000) {
+            app.reload(Snapshot::load()?);
+            last_reload = Instant::now();
+        }
     }
 }

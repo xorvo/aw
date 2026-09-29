@@ -6,7 +6,7 @@
 
 use std::cell::Cell;
 
-use crate::dash::state::{DormantWorkspace, PaneState, Snapshot};
+use crate::dash::state::{DormantWorkspace, PaneState, Snapshot, Status};
 
 /// One displayable line.
 #[derive(Debug, Clone)]
@@ -17,9 +17,26 @@ pub enum Row {
     Pane(PaneState),
     /// "─ Dormant ─" divider above the dormant block. Not selectable.
     DormantDivider,
+    /// `NEEDS YOU (2)` section heading in [`Grouping::Triage`]. Not
+    /// selectable — the sidebar groups by status, so these stand in for
+    /// the workspace headers the popup uses.
+    StatusHeader { status: Status, count: usize },
     /// A workspace-on-disk row with no live tmux session. Selectable;
     /// Enter spawns an `aw-<name>` session and switches to it.
     Dormant(DormantWorkspace),
+}
+
+/// How [`App::rebuild_rows`] orders the list.
+///
+/// The popup groups by workspace: you go to it knowing which workspace
+/// you care about. The sidebar is pinned all day and answers a different
+/// question — *who is waiting on me* — so it groups by status, waiting
+/// first. Same rows, same keymap, same actions; only the ordering and
+/// the headers differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grouping {
+    Workspace,
+    Triage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +124,8 @@ pub struct App {
     pub create: Option<CreateForm>,
     /// Phone-pairing QR overlay. `Some` iff `mode == Mode::Qr`.
     pub qr: Option<QrOverlay>,
+    /// Workspace grouping (popup) or status grouping (sidebar).
+    pub grouping: Grouping,
 }
 
 impl App {
@@ -123,7 +142,20 @@ impl App {
             snapshot: snap,
             create: None,
             qr: None,
+            grouping: Grouping::Workspace,
         };
+        app.rebuild_rows();
+        app
+    }
+
+    /// Same app, status-grouped — what `aw dash sidebar` runs.
+    pub fn new_sidebar(snap: Snapshot) -> Self {
+        let mut app = Self::new(snap);
+        app.grouping = Grouping::Triage;
+        // Dormant workspaces are a "what could I start" list; the pinned
+        // sidebar is a "what needs me now" list. Off by default, still on
+        // `H` for when you do want to reach for one.
+        app.show_dormant = false;
         app.rebuild_rows();
         app
     }
@@ -160,6 +192,64 @@ impl App {
     }
 
     fn rebuild_rows(&mut self) {
+        match self.grouping {
+            Grouping::Workspace => self.rebuild_rows_by_workspace(),
+            Grouping::Triage => self.rebuild_rows_by_status(),
+        }
+        self.clamp_selection();
+        self.snap_to_selectable();
+    }
+
+    /// Status-grouped rows: waiting first, then working, then idle. Parked
+    /// panes keep their own tail section so muting something doesn't make
+    /// it vanish entirely. Empty sections are omitted — a sidebar with an
+    /// empty `WORKING (0)` heading wastes the only thing it is short of.
+    fn rebuild_rows_by_status(&mut self) {
+        let mut rows = Vec::new();
+        let filtered = filter_panes(&self.snapshot.entries, &self.filter);
+
+        // Within a section, most recently active first: the thing that
+        // just changed is the thing you are most likely to want.
+        let section = |status: Status, parked: bool| {
+            let mut hits: Vec<&PaneState> = filtered
+                .iter()
+                // `agent_known` is the only thing separating a real agent
+                // from a plain shell whose window tmux happened to rename;
+                // without it the sidebar lists your own shells as idle
+                // agents. `aw switch` draws the same line.
+                .filter(|p| p.agent_known && p.parked == parked && p.status == status)
+                .collect();
+            if hits.is_empty() {
+                return Vec::new();
+            }
+            hits.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+            let mut out = vec![Row::StatusHeader { status, count: hits.len() }];
+            out.extend(hits.into_iter().map(|p| Row::Pane(p.clone())));
+            out
+        };
+
+        for status in [Status::Waiting, Status::Working, Status::Idle] {
+            rows.extend(section(status, false));
+        }
+        let parked: Vec<Row> = [Status::Waiting, Status::Working, Status::Idle]
+            .into_iter()
+            .flat_map(|s| section(s, true))
+            .collect();
+        rows.extend(parked);
+
+        if self.show_dormant {
+            let dormant = filter_dormant(&self.snapshot.dormant, &self.filter);
+            if !dormant.is_empty() {
+                rows.push(Row::DormantDivider);
+                for d in dormant {
+                    rows.push(Row::Dormant(d));
+                }
+            }
+        }
+        self.rows = rows;
+    }
+
+    fn rebuild_rows_by_workspace(&mut self) {
         let mut rows = Vec::new();
         let groups = group_filtered(&self.snapshot.entries, &self.filter);
         for (workspace, panes) in groups {
@@ -195,8 +285,6 @@ impl App {
         }
 
         self.rows = rows;
-        self.clamp_selection();
-        self.snap_to_selectable();
     }
 
     fn clamp_selection(&mut self) {
@@ -566,8 +654,11 @@ fn filter_dormant(dormant: &[DormantWorkspace], filter: &str) -> Vec<DormantWork
 
 /// Apply nucleo fuzzy filter to entries, then group by workspace, preserving
 /// first-appearance order.
-fn group_filtered(panes: &[PaneState], filter: &str) -> Vec<(String, Vec<PaneState>)> {
-    let filtered: Vec<PaneState> = if filter.trim().is_empty() {
+/// Apply the `/`-filter, ranked. Shared by both groupings so the sidebar
+/// and the popup agree on what a filter means; only the ordering applied
+/// afterwards differs.
+fn filter_panes(panes: &[PaneState], filter: &str) -> Vec<PaneState> {
+    if filter.trim().is_empty() {
         panes.to_vec()
     } else {
         let mut matcher = nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT);
@@ -613,7 +704,11 @@ fn group_filtered(panes: &[PaneState], filter: &str) -> Vec<(String, Vec<PaneSta
                 .then_with(|| b.1.last_activity.cmp(&a.1.last_activity))
         });
         keep.into_iter().map(|(_, p)| p).collect()
-    };
+    }
+}
+
+fn group_filtered(panes: &[PaneState], filter: &str) -> Vec<(String, Vec<PaneState>)> {
+    let filtered = filter_panes(panes, filter);
 
     let mut order: Vec<String> = Vec::new();
     let mut grouped: std::collections::BTreeMap<String, Vec<PaneState>> =
@@ -653,6 +748,133 @@ mod tests {
             pinned: false,
             agent_known: true,
         }
+    }
+
+    /// Build a triage-grouped app from (pane_id, workspace, agent, status)
+    /// tuples, as `aw dash sidebar` does.
+    fn sidebar_with(specs: &[(&str, &str, &str, Status)]) -> App {
+        let entries: Vec<PaneState> = specs
+            .iter()
+            .enumerate()
+            .map(|(i, (id, ws, agent, status))| {
+                let mut p = pane(id, ws, agent);
+                p.status = *status;
+                // Distinct activity so the within-section sort is defined.
+                p.last_activity = i as u64;
+                p
+            })
+            .collect();
+        App::new_sidebar(Snapshot { entries, dormant: vec![] })
+    }
+
+    fn section_order(app: &App) -> Vec<String> {
+        app.rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::StatusHeader { status, count } => Some(format!("{:?}({})", status, count)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sidebar_groups_by_status_waiting_first_and_omits_empty_sections() {
+        let app = sidebar_with(&[
+            ("%1", "alpha", "claude", Status::Idle),
+            ("%2", "beta", "codex", Status::Waiting),
+            ("%3", "alpha", "codex", Status::Waiting),
+        ]);
+        // No WORKING section at all — an empty heading would waste the one
+        // thing a sidebar is short of.
+        assert_eq!(section_order(&app), vec!["Waiting(2)", "Idle(1)"]);
+    }
+
+    #[test]
+    fn sidebar_sorts_most_recently_active_first_within_a_section() {
+        let app = sidebar_with(&[
+            ("%old", "alpha", "claude", Status::Waiting),
+            ("%new", "beta", "claude", Status::Waiting),
+        ]);
+        let ids: Vec<String> = app
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Pane(p) => Some(p.pane_id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, vec!["%new", "%old"], "higher last_activity leads");
+    }
+
+    #[test]
+    fn sidebar_hides_panes_that_are_not_known_agents() {
+        // A plain shell in an aw-* session: tmux renamed the window, so the
+        // label-derived "agent" is a guess. The sidebar must not list it.
+        let mut shell = pane("%9", "alpha", "aw");
+        shell.agent_known = false;
+        let mut real = pane("%1", "alpha", "claude");
+        real.status = Status::Waiting;
+        let app = App::new_sidebar(Snapshot {
+            entries: vec![shell, real],
+            dormant: vec![],
+        });
+        let ids: Vec<String> = app
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Pane(p) => Some(p.pane_id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, vec!["%1"], "only the hook-confirmed agent");
+    }
+
+    #[test]
+    fn sidebar_selection_starts_on_a_pane_and_jump_targets_it() {
+        // Regression guard for the grouping swap: the first row is a status
+        // header, so a naive selected=0 would make Enter a no-op.
+        let app = sidebar_with(&[
+            ("%1", "alpha", "claude", Status::Waiting),
+            ("%2", "beta", "codex", Status::Working),
+        ]);
+        assert!(matches!(app.rows[0], Row::StatusHeader { .. }));
+        assert_eq!(
+            app.selected_pane().map(|p| p.pane_id.clone()),
+            Some("%1".to_string()),
+            "selection snaps past the header onto the waiting agent"
+        );
+    }
+
+    #[test]
+    fn sidebar_moving_down_skips_headers_and_dividers() {
+        let app_specs = [
+            ("%1", "alpha", "claude", Status::Waiting),
+            ("%2", "beta", "codex", Status::Working),
+            ("%3", "gamma", "pi", Status::Idle),
+        ];
+        let mut app = sidebar_with(&app_specs);
+        let mut seen = vec![app.selected_pane().unwrap().pane_id.clone()];
+        for _ in 0..2 {
+            app.move_down();
+            seen.push(app.selected_pane().unwrap().pane_id.clone());
+        }
+        // One pane per section: j walks them in triage order, never
+        // landing on a StatusHeader.
+        assert_eq!(seen, vec!["%1", "%2", "%3"]);
+    }
+
+    #[test]
+    fn popup_grouping_is_unchanged_by_the_sidebar_work() {
+        let app = App::new(Snapshot {
+            entries: vec![pane("%1", "alpha", "claude"), pane("%2", "beta", "codex")],
+            dormant: vec![],
+        });
+        assert_eq!(app.grouping, Grouping::Workspace);
+        assert!(
+            matches!(&app.rows[0], Row::Header { workspace, .. } if workspace == "alpha"),
+            "popup still groups by workspace"
+        );
+        assert!(!app.rows.iter().any(|r| matches!(r, Row::StatusHeader { .. })));
     }
 
     fn dormant(name: &str, base: &str) -> DormantWorkspace {

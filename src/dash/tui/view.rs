@@ -877,6 +877,27 @@ mod tests {
         App::new_sidebar(Snapshot { entries, dormant: vec![] })
     }
 
+    /// Design aid, not an assertion: prints the sidebar at the sizes it
+    /// actually gets used at, so a layout change can be eyeballed without
+    /// spinning up tmux. Ignored by default.
+    ///
+    ///   cargo test --bin aw sidebar_preview -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn sidebar_preview() {
+        let app = sidebar_of(&[
+            ("%1", "aw", "claude", Status::Waiting, "approve the linux release"),
+            ("%2", "api-refactor", "claude", Status::Waiting, "bump serde to 1.0.220"),
+            ("%3", "aw", "codex", Status::Working, "add reflink support"),
+            ("%4", "docs-site", "claude", Status::Working, "rewrite the install page"),
+            ("%5", "api-refactor", "pi", Status::Idle, "done"),
+        ]);
+        for (w, h) in [(42u16, 22u16), (32, 22), (56, 22)] {
+            println!("\n╌╌╌ {w}x{h} ╌╌╌");
+            print!("{}", render_sidebar_to_string(&app, w, h));
+        }
+    }
+
     #[test]
     fn sidebar_renders_triage_sections_in_priority_order() {
         let app = sidebar_of(&[

@@ -41,7 +41,7 @@ fn main() -> Result<()> {
         }
         Cmd::Dash { command, filter } => match command {
             None => dash::tui::run_popup(filter),
-            Some(DashCmd::Sidebar) => dash::tui::run_sidebar(),
+            Some(DashCmd::Sidebar { side }) => dash::tui::run_sidebar(side),
             Some(DashCmd::StatusLine) => dash::cmd_status_line(),
             Some(DashCmd::NextReady) => dash::cmd_next_ready(),
             Some(DashCmd::Park { pane }) => dash::cmd_park(pane.as_deref()),

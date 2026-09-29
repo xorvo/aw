@@ -89,7 +89,7 @@ H toggle dormant         q  quit
 Other entry points:
 
 ```bash
-aw dash sidebar          # pin a narrow always-on side pane (prefix+o)
+aw dash sidebar          # pin a narrow side pane on the left (prefix+o)
 aw dash status-line      # one-liner for tmux's status-right
 aw dash next-ready       # one-shot: jump to oldest waiting agent
 aw dash --filter         # open straight into search mode

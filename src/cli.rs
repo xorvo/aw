@@ -155,7 +155,11 @@ pub enum Cmd {
 #[derive(Subcommand, Debug)]
 pub enum DashCmd {
     /// Spawn a sidebar pane in the current tmux session
-    Sidebar,
+    Sidebar {
+        /// Which side of the session to pin it to
+        #[arg(long, value_enum, default_value_t = SidebarSide::Left)]
+        side: SidebarSide,
+    },
     /// Print one-line summary for tmux status-right
     StatusLine,
     /// Switch-client to oldest waiting (or idle) pane
@@ -229,6 +233,17 @@ pub enum InstallCmd {
     },
     /// Run shell + hooks + tmux-bindings + serve-at-login interactively
     All,
+}
+
+/// Which side `aw dash sidebar` splits to. Left by default: the sidebar
+/// is a reference column you glance at, and a left edge is a steadier
+/// place for the eye to return to than one that moves with the width of
+/// whatever is beside it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lower")]
+pub enum SidebarSide {
+    Left,
+    Right,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]

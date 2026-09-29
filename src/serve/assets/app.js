@@ -25,9 +25,13 @@ function subtitle(s) {
     const t = title(s);
     // Skip anything the headline already says. With no tmux label and no agent,
     // the title falls back to the workspace, and repeating it reads as a bug.
-    const parts = [s.workspace === t ? '' : s.workspace, s.agent === t ? '' : s.agent, relAgo(s.ageSec)];
+    const parts = [s.workspace === t ? '' : s.workspace, s.agent === t ? '' : s.agent, relAgo(s.ageSec),
+        s.spawned > 0 ? `${s.spawned} spawned` : ''];
     return parts.filter(Boolean).join(' · ');
 }
+// `shown` is the honest state; `status` is only what the pane last claimed.
+// Missing on an older server, so fall back rather than render nothing.
+function shownOf(s) { return s.shown || s.status; }
 function render() {
     const list = $('#list');
     if (!sessions.length) {
@@ -39,10 +43,10 @@ function render() {
     $('#hdrdot').className = 'dot ' + (anyAttn ? 'waiting' : 'working');
     list.innerHTML = sessions.map(s => `
     <div class="card ${s.needsAttention ? 'attn' : ''}" onclick="openSheet('${s.pane_id}')">
-      <span class="dot ${s.status}"></span>
+      <span class="dot ${esc(shownOf(s))}"></span>
       <div class="meta">
         <div class="name"><span class="nm">${esc(title(s))}</span>
-          <span class="badge ${s.needsAttention ? 'attn' : ''}">${s.needsAttention ? 'needs you' : s.status}</span></div>
+          <span class="badge ${s.needsAttention ? 'attn' : ''}">${s.needsAttention ? 'needs you' : esc(shownOf(s))}</span></div>
         <div class="sub">${esc(subtitle(s))}</div>
         <div class="prompt">${esc(s.last_prompt || '')}</div>
       </div>
@@ -52,7 +56,7 @@ function render() {
         const s = sessions.find(x => x.pane_id === current);
         if (s) {
             $('#dTitle').textContent = s.workspace || current;
-            $('#dDot').className = 'dot ' + s.status;
+            $('#dDot').className = 'dot ' + shownOf(s);
         }
     }
     // attention notifications
@@ -215,7 +219,7 @@ function showSheet(pane) {
     current = pane;
     const s = sessions.find(x => x.pane_id === pane);
     $('#dTitle').textContent = s ? (s.workspace || pane) : pane;
-    $('#dDot').className = 'dot ' + (s ? s.status : 'idle');
+    $('#dDot').className = 'dot ' + (s ? shownOf(s) : 'idle');
     $('#sheet').classList.add('open');
     lastScreen = '';
     pendingScreen = null;

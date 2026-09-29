@@ -20,6 +20,10 @@ interface Session {
   name: string;
   /** null when no hook has ever fired for this pane, so the age is unknown. */
   ageSec: number | null;
+  /** What the pane can honestly be said to be doing: may be `stalled`. */
+  shown: string;
+  /** How many panes this one spawned inside its own tmux window. */
+  spawned: number;
 }
 
 interface KeysBody {
@@ -52,9 +56,13 @@ function subtitle(s: Session): string{
   const t=title(s);
   // Skip anything the headline already says. With no tmux label and no agent,
   // the title falls back to the workspace, and repeating it reads as a bug.
-  const parts=[s.workspace===t?'':s.workspace, s.agent===t?'':s.agent, relAgo(s.ageSec)];
+  const parts=[s.workspace===t?'':s.workspace, s.agent===t?'':s.agent, relAgo(s.ageSec),
+    s.spawned>0?`${s.spawned} spawned`:''];
   return parts.filter(Boolean).join(' · ');
 }
+// `shown` is the honest state; `status` is only what the pane last claimed.
+// Missing on an older server, so fall back rather than render nothing.
+function shownOf(s: Session): string{ return s.shown || s.status; }
 
 function render(){
   const list=$('#list');
@@ -63,17 +71,17 @@ function render(){
   $('#hdrdot').className = 'dot ' + (anyAttn?'waiting':'working');
   list.innerHTML = sessions.map(s=>`
     <div class="card ${s.needsAttention?'attn':''}" onclick="openSheet('${s.pane_id}')">
-      <span class="dot ${s.status}"></span>
+      <span class="dot ${esc(shownOf(s))}"></span>
       <div class="meta">
         <div class="name"><span class="nm">${esc(title(s))}</span>
-          <span class="badge ${s.needsAttention?'attn':''}">${s.needsAttention?'needs you':s.status}</span></div>
+          <span class="badge ${s.needsAttention?'attn':''}">${s.needsAttention?'needs you':esc(shownOf(s))}</span></div>
         <div class="sub">${esc(subtitle(s))}</div>
         <div class="prompt">${esc(s.last_prompt||'')}</div>
       </div>
     </div>`).join('');
   // keep an open sheet's header fresh as state streams in (incl. deep-link)
   if(current){ const s=sessions.find(x=>x.pane_id===current);
-    if(s){ $('#dTitle').textContent=s.workspace||current; $('#dDot').className='dot '+s.status; } }
+    if(s){ $('#dTitle').textContent=s.workspace||current; $('#dDot').className='dot '+shownOf(s); } }
   // attention notifications
   const now=new Set(sessions.filter(s=>s.needsAttention).map(s=>s.pane_id));
   for(const id of now){ if(!lastAttn.has(id)){ const s=sessions.find(x=>x.pane_id===id); notify(s); } }
@@ -150,7 +158,7 @@ function notify(s: Session | undefined){
 function showSheet(pane: string){    // UI only — no history side effects
   current=pane; const s=sessions.find(x=>x.pane_id===pane);
   $('#dTitle').textContent=s?(s.workspace||pane):pane;
-  $('#dDot').className='dot '+(s?s.status:'idle');
+  $('#dDot').className='dot '+(s?shownOf(s):'idle');
   $('#sheet').classList.add('open');
   lastScreen=''; pendingScreen=null; refreshScreen(); openScreenStream(pane);
   if(fitMode){ lastFit=''; setTimeout(applyFit,150); }   // fit the newly-opened session

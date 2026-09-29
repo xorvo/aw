@@ -8,7 +8,9 @@ use ratatui::{
     Frame,
 };
 
-use crate::dash::render::{dormant_glyph, humanize_age, parked_glyph, status_glyph};
+use crate::dash::render::{
+    dormant_glyph, humanize_age, parked_glyph, shown_glyph, shown_label, Shown,
+};
 use crate::dash::state::Status;
 use crate::dash::tui::app::{App, Mode, Row};
 
@@ -34,7 +36,7 @@ pub fn render(f: &mut Frame, app: &App) {
 }
 
 fn render_header(f: &mut Frame, area: Rect, app: &App) {
-    let (working, waiting, idle) = app.snapshot.counts();
+    let c = app.snapshot.counts();
     let mut spans = vec![
         Span::styled(
             "aw dash",
@@ -42,30 +44,28 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
         ),
         Span::raw("    "),
     ];
-    let g_work = status_glyph(Status::Working);
-    let g_wait = status_glyph(Status::Waiting);
-    let g_idle = status_glyph(Status::Idle);
-    if working > 0 {
+    // Ordered by how much they want your attention. Zero counts are dropped so
+    // the header stays short.
+    for (n, s) in [
+        (c.waiting, Shown::Waiting),
+        (c.stalled, Shown::Stalled),
+        (c.working, Shown::Working),
+        (c.idle, Shown::Idle),
+    ] {
+        if n == 0 {
+            continue;
+        }
+        let mut style = Style::default().fg(shown_ratatui_color(s));
+        if matches!(s, Shown::Waiting | Shown::Stalled) {
+            style = style.add_modifier(Modifier::BOLD);
+        }
         spans.push(Span::styled(
-            format!("{} {} working", g_work, working),
-            Style::default().fg(Color::Yellow),
+            format!("{} {} {}", shown_glyph(s), n, shown_label(s)),
+            style,
         ));
         spans.push(Span::raw("   "));
     }
-    if waiting > 0 {
-        spans.push(Span::styled(
-            format!("{} {} waiting", g_wait, waiting),
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::raw("   "));
-    }
-    if idle > 0 {
-        spans.push(Span::styled(
-            format!("{} {} idle", g_idle, idle),
-            Style::default().fg(Color::Green),
-        ));
-    }
-    if working == 0 && waiting == 0 && idle == 0 {
+    if c.waiting == 0 && c.stalled == 0 && c.working == 0 && c.idle == 0 {
         spans.push(Span::styled(
             "no agents tracked",
             Style::default().fg(Color::DarkGray),
@@ -73,6 +73,13 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
+
+/// `Shown` as a ratatui colour, from the shared palette.
+fn shown_ratatui_color(s: Shown) -> Color {
+    let (r, g, b) = crate::dash::render::shown_rgb(s);
+    Color::Rgb(r, g, b)
+}
+
 
 fn render_body(f: &mut Frame, area: Rect, app: &App) {
     // Create mode owns the entire body — replacing the agents/details
@@ -437,12 +444,12 @@ fn line_for_row(row: &Row, selected: bool) -> Line<'static> {
             line
         }
         Row::Pane(p) => {
-            let glyph = status_glyph(p.status);
-            let glyph_style = match p.status {
-                Status::Working => Style::default().fg(Color::Yellow),
-                Status::Waiting => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                Status::Idle => Style::default().fg(Color::Green),
-            };
+            let shown = p.shown(crate::dash::state::now_epoch());
+            let glyph = shown_glyph(shown);
+            let mut glyph_style = Style::default().fg(shown_ratatui_color(shown));
+            if matches!(shown, Shown::Waiting | Shown::Stalled) {
+                glyph_style = glyph_style.add_modifier(Modifier::BOLD);
+            }
             let parked = if p.parked {
                 Some(Span::styled(
                     format!(" {} parked", parked_glyph()),
@@ -464,7 +471,14 @@ fn line_for_row(row: &Row, selected: bool) -> Line<'static> {
             // fallback) so the column is never blank. 18 cols fits common
             // session names without spilling into the prompt column.
             let label_src = if p.label.is_empty() { p.agent.as_str() } else { p.label.as_str() };
-            let label_col = format!("{:<18}", truncate(label_src, 18));
+            // A pane its window's lead spawned is drawn under it, so a group of
+            // helpers reads as one piece of work rather than as peers of every
+            // other session. The lead keeps the full label width.
+            let label_col = if p.is_lead() {
+                format!("{:<18}", truncate(label_src, 18))
+            } else {
+                format!("{:<18}", format!("⤷ {}", truncate(label_src, 16)))
+            };
             let mut spans = vec![
                 edge,
                 Span::raw("   "),
@@ -759,6 +773,8 @@ mod tests {
             label: String::new(),
             pinned: false,
             agent_known: true,
+            window_id: String::new(),
+            lead_pane: String::new(),
         }
     }
 
@@ -1173,12 +1189,20 @@ pub fn render_sidebar(f: &mut Frame, app: &App) {
     let title = if app.mode == Mode::Filter {
         format!(" /{} ", app.filter)
     } else {
-        let (w, wt, i) = app.snapshot.agent_counts();
+        let c = app.snapshot.agent_counts();
+        // Stalled only when there is any: at ~42 columns the title cannot
+        // afford a group that is almost always zero.
+        let stalled = if c.stalled > 0 {
+            format!(" {} {} ", shown_glyph(Shown::Stalled), c.stalled)
+        } else {
+            String::new()
+        };
         format!(
-            " {} {}  {} {}  {} {} ",
-            status_glyph(Status::Working), w,
-            status_glyph(Status::Waiting), wt,
-            status_glyph(Status::Idle), i,
+            " {} {}  {} {}  {} {}{}",
+            shown_glyph(Shown::Working), c.working,
+            shown_glyph(Shown::Waiting), c.waiting,
+            shown_glyph(Shown::Idle), c.idle,
+            stalled,
         )
     };
     let block = Block::default()
@@ -1275,10 +1299,16 @@ fn sidebar_pane_line(p: &crate::dash::state::PaneState, selected: bool, width: u
     } else {
         Span::raw(" ")
     };
-    let color = match p.status {
-        Status::Waiting => Color::Yellow,
-        Status::Working => Color::Green,
-        Status::Idle => Color::DarkGray,
+    // Derived, not recorded: a `working` latch nobody renewed is stalled, and
+    // the sidebar is the one surface pinned all day where that matters most.
+    // The sidebar keeps its own palette (yellow carries attention against this
+    // background, where the popup uses red) — stalled just joins it.
+    let shown = p.shown(crate::dash::state::now_epoch());
+    let color = match shown {
+        Shown::Waiting => Color::Yellow,
+        Shown::Working => Color::Green,
+        Shown::Stalled => Color::Magenta,
+        Shown::Idle => Color::DarkGray,
     };
     let age = humanize_age(p.last_activity);
     let parked = if p.parked {
@@ -1298,7 +1328,7 @@ fn sidebar_pane_line(p: &crate::dash::state::PaneState, selected: bool, width: u
     let pad = name_budget.saturating_sub(name.chars().count());
     Line::from(vec![
         edge,
-        Span::styled(status_glyph(p.status).to_string(), Style::default().fg(color)),
+        Span::styled(shown_glyph(shown).to_string(), Style::default().fg(color)),
         Span::raw(" "),
         Span::styled(
             name,

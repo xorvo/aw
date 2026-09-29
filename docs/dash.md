@@ -50,6 +50,36 @@ records:
 Unknown events are silent no-ops — a misconfigured hook can never break the
 agent.
 
+## Status, and when it expires
+
+A hook sets a pane's status and nothing revises it. That suits `waiting` and
+`idle`, which are states an agent rests in, but `working` is a claim about
+ongoing activity: a working agent fires a hook every few seconds, so silence
+means the claim was never renewed. Ten minutes of it and the pane is shown as
+**stalled** — typically a session that errored out, which sends no `Stop`.
+
+Stalled is not a guess about the cause, only a statement that the claim is no
+longer good. It has its own glyph and colour on every surface and is counted
+separately in the header and the status line. Nothing downgrades `waiting` or
+`idle`, and a pane no hook has ever fired in has no claim to expire.
+
+## Spawned panes
+
+An agent that spawns helpers splits them into its own tmux window, so a window
+holding several panes is one group and the window *is* the hierarchy — nothing
+has to ask an agent about its children, and nothing couples to a particular
+agent's internals.
+
+The group's lead is the numerically lowest pane id in the window. tmux hands
+out pane ids monotonically and never reuses them within a server, so the lowest
+is the pane the window started with. Pane *index* would be wrong: it tracks
+on-screen position, which moves when panes are rearranged.
+
+`aw dash` shows the whole group, each lead followed by what it spawned, indented
+with `⤷`. `aw switch` and the phone app list leads only, with `N spawned` on the
+lead, because those exist for jumping and five helpers are one piece of work
+rather than five places to go.
+
 ## When state files are removed
 
 A pane's state file is deleted once its pane is gone, which keeps the cache from

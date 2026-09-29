@@ -143,27 +143,28 @@ fn pick_next_ready(snap: &state::Snapshot) -> Option<String> {
 
 /// `aw dash status-line` — one-line summary for tmux status-right.
 pub fn cmd_status_line() -> Result<()> {
-    use crate::dash::render::status_glyph;
-    use crate::dash::state::Status;
+    use crate::dash::render::{shown_glyph, shown_label, Shown};
 
     let snap = state::Snapshot::load()?;
-    let (working, waiting, idle) = snap.counts();
-    if waiting == 0 && working == 0 && idle == 0 {
+    let c = snap.counts();
+    if c.waiting == 0 && c.working == 0 && c.stalled == 0 && c.idle == 0 {
         return Ok(());
     }
-    if waiting == 0 && working == 0 {
-        print!("{} all clear", status_glyph(Status::Idle));
+    if c.waiting == 0 && c.working == 0 && c.stalled == 0 {
+        print!("{} all clear", shown_glyph(Shown::Idle));
         return Ok(());
     }
+    // Stalled sits next to waiting: both are things you may need to look at.
     let mut parts = Vec::new();
-    if working > 0 {
-        parts.push(format!("{} {} working", status_glyph(Status::Working), working));
-    }
-    if waiting > 0 {
-        parts.push(format!("{} {} waiting", status_glyph(Status::Waiting), waiting));
-    }
-    if idle > 0 {
-        parts.push(format!("{} {} idle", status_glyph(Status::Idle), idle));
+    for (n, s) in [
+        (c.working, Shown::Working),
+        (c.waiting, Shown::Waiting),
+        (c.stalled, Shown::Stalled),
+        (c.idle, Shown::Idle),
+    ] {
+        if n > 0 {
+            parts.push(format!("{} {} {}", shown_glyph(s), n, shown_label(s)));
+        }
     }
     print!("{}", parts.join("  "));
     Ok(())

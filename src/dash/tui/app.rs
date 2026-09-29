@@ -721,8 +721,44 @@ fn group_filtered(panes: &[PaneState], filter: &str) -> Vec<(String, Vec<PaneSta
     }
     order
         .into_iter()
-        .map(|k| (k.clone(), grouped.remove(&k).unwrap_or_default()))
+        .map(|k| {
+            let mut panes = grouped.remove(&k).unwrap_or_default();
+            order_by_group(&mut panes);
+            (k, panes)
+        })
         .collect()
+}
+
+/// Put each lead immediately before the panes it spawned.
+///
+/// Without this a window's helpers scatter through the workspace by whatever
+/// order they arrived in, which is what made five spawned agents look like five
+/// unrelated sessions. Relative order between groups is preserved, so filter
+/// ranking and recency still decide which group comes first.
+fn order_by_group(panes: &mut Vec<PaneState>) {
+    let mut seen: Vec<String> = Vec::new();
+    for p in panes.iter() {
+        let key = if p.lead_pane.is_empty() { p.pane_id.clone() } else { p.lead_pane.clone() };
+        if !seen.contains(&key) {
+            seen.push(key);
+        }
+    }
+    let mut out: Vec<PaneState> = Vec::with_capacity(panes.len());
+    for key in seen {
+        // The lead first when it is present at all — a filter can match a
+        // spawned pane without matching its lead, and then the group simply
+        // has no head to hang from.
+        if let Some(i) = panes.iter().position(|p| p.pane_id == key) {
+            out.push(panes[i].clone());
+        }
+        for p in panes.iter() {
+            let k = if p.lead_pane.is_empty() { &p.pane_id } else { &p.lead_pane };
+            if *k == key && p.pane_id != key {
+                out.push(p.clone());
+            }
+        }
+    }
+    *panes = out;
 }
 
 #[cfg(test)]
@@ -747,6 +783,8 @@ mod tests {
             label: String::new(),
             pinned: false,
             agent_known: true,
+            window_id: String::new(),
+            lead_pane: String::new(),
         }
     }
 
@@ -1076,6 +1114,30 @@ mod tests {
         }).collect();
         assert_eq!(panes.len(), 1, "label filter should narrow to one pane");
         assert_eq!(panes[0].pane_id, "%1");
+    }
+
+    #[test]
+    fn spawned_panes_follow_their_lead() {
+        let mut ps = vec![
+            { let mut p = pane("%44", "ve", "claude"); p.lead_pane = "%35".into(); p },
+            { let mut p = pane("%16", "ve", "claude"); p.lead_pane = "%16".into(); p },
+            { let mut p = pane("%45", "ve", "claude"); p.lead_pane = "%35".into(); p },
+            { let mut p = pane("%35", "ve", "claude"); p.lead_pane = "%35".into(); p },
+        ];
+        order_by_group(&mut ps);
+        let ids: Vec<&str> = ps.iter().map(|p| p.pane_id.as_str()).collect();
+        // %44 arrived first so its group leads, but %35 heads that group.
+        assert_eq!(ids, vec!["%35", "%44", "%45", "%16"]);
+    }
+
+    #[test]
+    fn a_spawned_pane_whose_lead_is_filtered_out_still_shows() {
+        let mut ps = vec![
+            { let mut p = pane("%44", "ve", "claude"); p.lead_pane = "%35".into(); p },
+        ];
+        order_by_group(&mut ps);
+        assert_eq!(ps.len(), 1, "never drop a pane just because its lead is absent");
+        assert_eq!(ps[0].pane_id, "%44");
     }
 
     #[test]

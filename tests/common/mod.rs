@@ -187,6 +187,25 @@ impl TestEnv {
 
 }
 
+/// The sandbox env every `aw` process in the suite must run under.
+///
+/// Exposed because a tmux *server* captures the environment it was started
+/// with and hands it to every pane created later. A server spawned without
+/// these will run `aw` against the developer's real `~/.cache/aw` while
+/// reporting only the test server's panes — which makes the dashboard's garbage
+/// collection delete all of their live panes' state. That actually happened.
+pub fn sandbox_env(env: &TestEnv) -> Vec<(&'static str, String)> {
+    vec![
+        ("HOME", env.home.display().to_string()),
+        ("AW_INSTALL_DIR", env.install_dir.display().to_string()),
+        ("AW_WORKSPACES_DIR", env.workspaces_dir.display().to_string()),
+        ("AW_BIN_DIR", env.bin_dir.display().to_string()),
+        ("AW_CONFIG_FILE", env.config_path.display().to_string()),
+        ("AW_STATE_DIR", env.state_dir.display().to_string()),
+        ("TMUX_TMPDIR", env.tmp.path().display().to_string()),
+    ]
+}
+
 fn configure_env(cmd: &mut Command, env: &TestEnv) {
     let path = format!(
         "{}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",

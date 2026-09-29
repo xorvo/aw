@@ -17,8 +17,15 @@ pub fn sessions_value() -> Result<serde_json::Value> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    let spawned = crate::dash::tui::switch::spawned_counts(&snap.entries);
     let mut entries: Vec<(bool, u64, serde_json::Value)> = Vec::with_capacity(snap.entries.len());
     for p in &snap.entries {
+        // Leads only, matching `aw switch`: a pane an agent spawned inside its
+        // own window belongs to that agent's work, not next to it in a list you
+        // scroll on a phone.
+        if !p.is_lead() {
+            continue;
+        }
         let needs_attention = p.status == Status::Waiting;
         let mut v = serde_json::to_value(p)?;
         v["needsAttention"] = needs_attention.into();
@@ -34,6 +41,10 @@ pub fn sessions_value() -> Result<serde_json::Value> {
         } else {
             now.saturating_sub(p.last_activity).into()
         };
+        // What the pane can honestly be said to be doing, which is not always
+        // what it last claimed: a `working` latch never renewed is `stalled`.
+        v["shown"] = crate::dash::render::shown_label(p.shown(now)).into();
+        v["spawned"] = spawned.get(&p.pane_id).copied().unwrap_or(0).into();
         entries.push((needs_attention, p.last_activity, v));
     }
     // waiting first, then most recently active
@@ -100,6 +111,23 @@ mod tests {
     }
 
     /// The epoch-age bug: a pane no hook has fired in must not report an age.
+    /// The phone list is for jumping, so it mirrors `aw switch`: leads only.
+    #[test]
+    fn spawned_panes_are_left_out_of_the_phone_payload() {
+        let mut lead = pane("%35", Status::Waiting, 100);
+        lead.lead_pane = "%35".into();
+        let mut kid = pane("%44", Status::Working, 100);
+        kid.lead_pane = "%35".into();
+        let all = vec![lead, kid];
+        let leads: Vec<&PaneState> = all.iter().filter(|p| p.is_lead()).collect();
+        assert_eq!(leads.len(), 1);
+        assert_eq!(leads[0].pane_id, "%35");
+        assert_eq!(
+            crate::dash::tui::switch::spawned_counts(&all).get("%35").copied(),
+            Some(1)
+        );
+    }
+
     #[test]
     fn never_active_pane_reports_unknown_age() {
         let mut p = pane("%9", Status::Idle, 0);

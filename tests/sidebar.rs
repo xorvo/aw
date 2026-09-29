@@ -45,7 +45,7 @@ impl PrivateTmux {
                 "-s", "probe",
                 "-c", env.home.to_str().unwrap(),
             ])
-            .env("TMUX_TMPDIR", env.tmp.path())
+            .envs(common::sandbox_env(env))
             .status()
             .expect("spawn private tmux");
         Self { socket, tmpdir: env.tmp.path().to_path_buf() }
@@ -54,7 +54,7 @@ impl PrivateTmux {
     fn send(&self, env: &TestEnv, args: &[&str]) -> std::process::Output {
         let mut cmd = Command::new("tmux");
         cmd.args(["-L", &self.socket]).args(args);
-        cmd.env("TMUX_TMPDIR", env.tmp.path())
+        cmd.envs(common::sandbox_env(env))
             .output()
             .expect("tmux subcmd")
     }

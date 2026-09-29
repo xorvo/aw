@@ -50,6 +50,14 @@ pub struct PaneState {
     /// Not persisted — the on-disk value would be stale by next load.
     #[serde(skip)]
     pub label: String,
+    /// tmux window this pane belongs to. Panes sharing a window are one group.
+    /// Not persisted; refreshed from tmux on every load.
+    #[serde(skip)]
+    pub window_id: String,
+    /// Pane id of this window's lead — the agent that spawned the rest. Equal
+    /// to `pane_id` when this *is* the lead. Not persisted.
+    #[serde(skip)]
+    pub lead_pane: String,
     /// Whether we actually know which agent runs here, as opposed to having
     /// guessed from the tmux label.
     ///
@@ -85,7 +93,19 @@ impl PaneState {
             label: String::new(),
             pinned: false,
             agent_known: !agent.is_empty(),
+            window_id: String::new(),
+            lead_pane: String::new(),
         }
+    }
+
+    /// Is this pane its window's lead, rather than one it spawned?
+    pub fn is_lead(&self) -> bool {
+        self.lead_pane.is_empty() || self.lead_pane == self.pane_id
+    }
+
+    /// What this pane can honestly be said to be doing right now.
+    pub fn shown(&self, now: u64) -> crate::dash::render::Shown {
+        crate::dash::render::shown_status(self.status, self.last_activity, now)
     }
 
     pub fn write_atomic(&self, path: &Path) -> Result<()> {
@@ -128,6 +148,15 @@ pub struct DormantWorkspace {
     /// workspaces created in rapid succession (sandbox tests, scripts).
     #[serde(skip)]
     pub mtime: u128,
+}
+
+/// Pane tallies for the header and the status line, by *derived* state.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Counts {
+    pub working: usize,
+    pub waiting: usize,
+    pub stalled: usize,
+    pub idle: usize,
 }
 
 #[derive(Debug)]
@@ -203,10 +232,25 @@ impl Snapshot {
                 // pane under this same server. Covers panes that predate the
                 // stamping, which would otherwise be indistinguishable from
                 // plain shells and vanish from the switcher.
-                let hints = crate::manifest::agent_hints(
-                    &crate::manifest::SessionManifest::load(),
-                    crate::dash::tmux::server_pid(),
-                );
+                //
+                // Computed only when some pane actually needs it. It costs a
+                // file read plus a tmux round-trip, and this runs on every dash
+                // tick — a fully stamped or fully hooked server should pay
+                // nothing. (Skipping it also keeps first paint quick enough for
+                // the sidebar test's window, which is how the cost surfaced.)
+                let needs_hints = panes.iter().any(|tp| {
+                    tp.session.starts_with("aw-")
+                        && tp.aw_agent.is_empty()
+                        && !hook_state.contains_key(&tp.pane_id)
+                });
+                let hints = if needs_hints {
+                    crate::manifest::agent_hints(
+                        &crate::manifest::SessionManifest::load(),
+                        crate::dash::tmux::server_pid(),
+                    )
+                } else {
+                    std::collections::BTreeMap::new()
+                };
 
                 // (3) For every live pane in an aw-* session, build a row,
                 //     overlaying hook state when present. tmux fields
@@ -247,6 +291,7 @@ impl Snapshot {
                             s.label = label;
                             s.pinned = pinned_now;
                             s.agent_known = !s.agent.is_empty();
+                            s.window_id = tp.window_id.clone();
                             s
                         }
                         None => PaneState {
@@ -275,6 +320,8 @@ impl Snapshot {
                             label,
                             pinned: pinned_now,
                             agent_known: agent_for(tp, &hints).is_some(),
+                            window_id: tp.window_id.clone(),
+                            lead_pane: String::new(),
                         },
                     };
                     entries.push(row);
@@ -339,6 +386,8 @@ impl Snapshot {
             }
         }
 
+        assign_group_leads(&mut entries);
+
         // Sort active entries by workspace, with workspace order driven by
         // (pinned first, then max-activity desc among workspace's panes,
         // then name alpha). Inside a workspace, keep stable pane_id order.
@@ -373,40 +422,37 @@ impl Snapshot {
     /// equivalent of "set aside, don't bug me about these."
     /// Counts restricted to panes we can actually identify as agents.
     ///
-    /// [`Self::counts`] includes every pane in an `aw-*` session, which
-    /// means a plain shell you happen to have open is tallied as an idle
-    /// agent (see [`PaneState::agent_known`]). The sidebar is pinned all
-    /// day, so that noise is the difference between a useful readout and
-    /// one you learn to ignore.
-    pub fn agent_counts(&self) -> (usize, usize, usize) {
-        let mut w = 0;
-        let mut wt = 0;
-        let mut i = 0;
-        for e in self.entries.iter().filter(|e| e.agent_known && !e.parked) {
-            match e.status {
-                Status::Working => w += 1,
-                Status::Waiting => wt += 1,
-                Status::Idle => i += 1,
-            }
-        }
-        (w, wt, i)
+    /// [`Self::counts`] includes every pane in an `aw-*` session, which means a
+    /// plain shell you happen to have open is tallied as an idle agent (see
+    /// [`PaneState::agent_known`]). The sidebar is pinned all day, so that noise
+    /// is the difference between a useful readout and one you learn to ignore.
+    pub fn agent_counts(&self) -> Counts {
+        self.tally(|e| e.agent_known && !e.parked)
     }
 
-    pub fn counts(&self) -> (usize, usize, usize) {
-        let mut w = 0;
-        let mut wt = 0;
-        let mut i = 0;
-        for e in &self.entries {
-            if e.parked {
-                continue;
-            }
-            match e.status {
-                Status::Working => w += 1,
-                Status::Waiting => wt += 1,
-                Status::Idle => i += 1,
+    pub fn counts(&self) -> Counts {
+        self.tally(|e| !e.parked)
+    }
+
+    /// Tally the panes `keep` accepts, by *derived* state.
+    ///
+    /// One body for both tallies so they can never disagree about what counts as
+    /// working. Derived rather than recorded: a `working` latch that was never
+    /// renewed is `stalled`, so a session that errored out days ago stops being
+    /// reported as busy.
+    fn tally(&self, keep: impl Fn(&PaneState) -> bool) -> Counts {
+        use crate::dash::render::Shown;
+        let now = now_epoch();
+        let mut c = Counts::default();
+        for e in self.entries.iter().filter(|e| keep(e)) {
+            match e.shown(now) {
+                Shown::Working => c.working += 1,
+                Shown::Waiting => c.waiting += 1,
+                Shown::Stalled => c.stalled += 1,
+                Shown::Idle => c.idle += 1,
             }
         }
-        (w, wt, i)
+        c
     }
 }
 
@@ -437,6 +483,50 @@ fn audit(line: &str) {
             line
         );
     }
+}
+
+/// Mark each pane with its window's lead.
+///
+/// An agent that spawns helpers splits them into its own tmux window, so a
+/// window holding several panes is one group and the window *is* the hierarchy
+/// — no agent has to report its children, and nothing couples to a particular
+/// agent's internals.
+///
+/// The lead is the numerically lowest pane id in the window. tmux hands out
+/// pane ids monotonically and never reuses them within a server, so the lowest
+/// is the pane the window started with and every other pane was split off it
+/// later. Pane *index* would be wrong here: it tracks on-screen position, which
+/// moves when panes are rearranged.
+pub fn assign_group_leads(entries: &mut [PaneState]) {
+    use std::collections::HashMap;
+    let mut lead: HashMap<String, (u64, String)> = HashMap::new();
+    for e in entries.iter() {
+        if e.window_id.is_empty() {
+            continue;
+        }
+        let n = pane_ordinal(&e.pane_id);
+        lead.entry(e.window_id.clone())
+            .and_modify(|best| {
+                if n < best.0 {
+                    *best = (n, e.pane_id.clone());
+                }
+            })
+            .or_insert((n, e.pane_id.clone()));
+    }
+    for e in entries.iter_mut() {
+        e.lead_pane = match lead.get(&e.window_id) {
+            Some((_, id)) => id.clone(),
+            // No window info (tmux unreachable): treat the pane as its own lead
+            // so nothing is ever hidden for lack of grouping data.
+            None => e.pane_id.clone(),
+        };
+    }
+}
+
+/// Numeric part of a tmux pane id (`%44` -> 44) for creation-order comparison.
+/// An unparseable id sorts last so it can never masquerade as a lead.
+fn pane_ordinal(pane_id: &str) -> u64 {
+    pane_id.trim_start_matches('%').parse().unwrap_or(u64::MAX)
 }
 
 /// Should this pane's state file be deleted?
@@ -551,6 +641,46 @@ mod tests {
         // Small sleep so successive calls produce distinguishable mtimes on
         // the workspace dir — recency-sort tests rely on this.
         std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+
+    fn win(pane: &str, window: &str) -> PaneState {
+        let mut p = PaneState::new(pane, "claude");
+        p.window_id = window.to_string();
+        p
+    }
+
+    #[test]
+    fn the_lead_is_the_oldest_pane_in_the_window() {
+        // One window holding an agent (%35) and five panes it split off later.
+        let mut e = vec![
+            win("%44", "@27"), win("%35", "@27"), win("%48", "@27"),
+            win("%46", "@27"), win("%47", "@27"), win("%45", "@27"),
+            win("%16", "@16"),   // a window of its own
+        ];
+        assign_group_leads(&mut e);
+        for p in &e {
+            let want = if p.window_id == "@27" { "%35" } else { "%16" };
+            assert_eq!(p.lead_pane, want, "{} got the wrong lead", p.pane_id);
+        }
+        assert!(e.iter().find(|p| p.pane_id == "%35").unwrap().is_lead());
+        assert!(!e.iter().find(|p| p.pane_id == "%44").unwrap().is_lead());
+        assert!(e.iter().find(|p| p.pane_id == "%16").unwrap().is_lead());
+    }
+
+    #[test]
+    fn pane_ids_compare_numerically_not_as_text() {
+        // "%9" sorts after "%44" as a string, which would pick the wrong lead.
+        let mut e = vec![win("%44", "@1"), win("%9", "@1")];
+        assign_group_leads(&mut e);
+        assert!(e.iter().all(|p| p.lead_pane == "%9"));
+    }
+
+    #[test]
+    fn a_pane_with_no_window_info_leads_itself() {
+        // tmux unreachable: never hide a pane for lack of grouping data.
+        let mut e = vec![PaneState::new("%1", "claude")];
+        assign_group_leads(&mut e);
+        assert!(e[0].is_lead());
     }
 
     #[test]

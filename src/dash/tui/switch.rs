@@ -34,7 +34,13 @@ use ratatui::{
 
 use serde::Serialize;
 
-use crate::dash::render::{humanize_age, status_glyph};
+use crate::dash::render::{humanize_age, shown_glyph, Shown};
+
+/// `Shown` as a ratatui colour, from the shared palette in `render`.
+fn shown_ratatui(s: Shown) -> Color {
+    let (r, g, b) = crate::dash::render::shown_rgb(s);
+    Color::Rgb(r, g, b)
+}
 use crate::dash::state::{PaneState, Snapshot, Status};
 use crate::dash::tmux;
 
@@ -89,7 +95,11 @@ const CHROME_MIN_HEIGHT: u16 = 8;
 pub fn active_panes(entries: &[PaneState], now: u64) -> Vec<PaneState> {
     let mut out: Vec<PaneState> = entries
         .iter()
-        .filter(|p| !p.parked && p.agent_known && !stale(p, now))
+        // Leads only. A pane an agent spawned inside its own window is part of
+        // that agent's work, not a separate place to jump to, and listing five
+        // of them as peers of every other session is just noise. The dashboard
+        // still shows them, nested under their lead.
+        .filter(|p| !p.parked && p.agent_known && p.is_lead() && !stale(p, now))
         .cloned()
         .collect();
     // Known activity first, then unknown; within each, newest first. Pane id
@@ -111,6 +121,17 @@ pub fn active_panes(entries: &[PaneState], now: u64) -> Vec<PaneState> {
 /// old, so it is never stale — that is the restored-session case.
 fn stale(p: &PaneState, now: u64) -> bool {
     p.last_activity != 0 && now.saturating_sub(p.last_activity) >= WINDOW_SECS
+}
+
+/// How many panes each lead spawned, keyed by the lead's pane id.
+pub fn spawned_counts(entries: &[PaneState]) -> std::collections::HashMap<String, usize> {
+    let mut out = std::collections::HashMap::new();
+    for p in entries {
+        if !p.is_lead() && !p.lead_pane.is_empty() {
+            *out.entry(p.lead_pane.clone()).or_insert(0) += 1;
+        }
+    }
+    out
 }
 
 /// How the current terminal size is spent.
@@ -153,6 +174,8 @@ impl Metrics {
 struct Switcher {
     cards: Vec<PaneState>,
     cursor: usize,
+    /// lead pane id -> how many panes it spawned.
+    spawned: std::collections::HashMap<String, usize>,
 }
 
 impl Switcher {
@@ -160,6 +183,7 @@ impl Switcher {
         Self {
             cards: active_panes(&snap.entries, crate::dash::state::now_epoch()),
             cursor: 0,
+            spawned: spawned_counts(&snap.entries),
         }
     }
 
@@ -169,6 +193,7 @@ impl Switcher {
     fn reload(&mut self, snap: &Snapshot) {
         let anchor = self.cards.get(self.cursor).map(|p| p.pane_id.clone());
         self.cards = active_panes(&snap.entries, crate::dash::state::now_epoch());
+        self.spawned = spawned_counts(&snap.entries);
         self.cursor = anchor
             .and_then(|id| self.cards.iter().position(|p| p.pane_id == id))
             .unwrap_or(0)
@@ -294,7 +319,8 @@ fn render(f: &mut Frame, sw: &Switcher) {
     let end = (offset + m.visible).min(sw.cards.len());
     for (row, i) in (offset..end).enumerate() {
         let card_y = y + row as u16 * CARD_ROWS;
-        let (headline, byline) = card_lines(&sw.cards[i], i, i == sw.cursor, &m);
+        let spawned = sw.spawned.get(&sw.cards[i].pane_id).copied().unwrap_or(0);
+        let (headline, byline) = card_lines(&sw.cards[i], i, i == sw.cursor, &m, spawned);
         draw_line(f, headline, area.x + m.left, card_y, m.width);
         draw_line(f, byline, area.x + m.left, card_y + 1, m.width);
     }
@@ -308,14 +334,17 @@ fn render(f: &mut Frame, sw: &Switcher) {
 
 /// `aw switch   3 waiting · 5 idle` — the counts are the reason to look.
 fn header_line(sw: &Switcher) -> Line<'static> {
+    let now = crate::dash::state::now_epoch();
     let mut working = 0usize;
     let mut waiting = 0usize;
+    let mut stalled = 0usize;
     let mut idle = 0usize;
     for c in &sw.cards {
-        match c.status {
-            Status::Working => working += 1,
-            Status::Waiting => waiting += 1,
-            Status::Idle => idle += 1,
+        match c.shown(now) {
+            Shown::Working => working += 1,
+            Shown::Waiting => waiting += 1,
+            Shown::Stalled => stalled += 1,
+            Shown::Idle => idle += 1,
         }
     }
     // No "last 24h" label any more: the list is every live agent pane, and
@@ -325,9 +354,10 @@ fn header_line(sw: &Switcher) -> Line<'static> {
         Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
     )];
     for (n, label, color) in [
-        (waiting, "waiting", Color::Red),
-        (working, "working", Color::Yellow),
-        (idle, "idle", Color::Green),
+        (waiting, "waiting", shown_ratatui(Shown::Waiting)),
+        (stalled, "stalled", shown_ratatui(Shown::Stalled)),
+        (working, "working", shown_ratatui(Shown::Working)),
+        (idle, "idle", shown_ratatui(Shown::Idle)),
     ] {
         if n > 0 {
             spans.push(Span::raw("   "));
@@ -363,6 +393,7 @@ fn card_lines(
     index: usize,
     selected: bool,
     m: &Metrics,
+    spawned: usize,
 ) -> (Line<'static>, Line<'static>) {
     let cols = m.text_cols();
 
@@ -375,11 +406,12 @@ fn card_lines(
         format!("{}  ", marker)
     };
 
-    let glyph_style = match p.status {
-        Status::Working => Style::default().fg(Color::Yellow),
-        Status::Waiting => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        Status::Idle => Style::default().fg(Color::Green),
-    };
+    let shown = p.shown(crate::dash::state::now_epoch());
+    let (cr, cg, cb) = crate::dash::render::shown_rgb(shown);
+    let mut glyph_style = Style::default().fg(Color::Rgb(cr, cg, cb));
+    if matches!(shown, Shown::Waiting | Shown::Stalled) {
+        glyph_style = glyph_style.add_modifier(Modifier::BOLD);
+    }
 
     let name = card_name(p);
     let headline = Line::from(vec![
@@ -391,7 +423,7 @@ fn card_lines(
                 Style::default().fg(Color::Gray)
             },
         ),
-        Span::styled(status_glyph(p.status).to_string(), glyph_style),
+        Span::styled(shown_glyph(shown).to_string(), glyph_style),
         Span::raw("  "),
         Span::styled(
             pad(&truncate(name, cols), cols),
@@ -406,8 +438,17 @@ fn card_lines(
 
     // Byline: agent type is the dimmest (you mostly know it), the workspace
     // gets the accent colour because it answers "which project is this?".
+    // `· N spawned` tells you this row stands for a group without listing the
+    // group, which is the whole point of hiding them here.
+    let tail = if spawned > 0 {
+        format!(" · {} spawned", spawned)
+    } else {
+        String::new()
+    };
     let agent_cols = p.agent.chars().count().min(cols);
-    let ws_cols = cols.saturating_sub(agent_cols + 3);
+    let ws_cols = cols
+        .saturating_sub(agent_cols + 3)
+        .saturating_sub(tail.chars().count());
     let workspace = truncate(&p.workspace, ws_cols);
     let byline = Line::from(vec![
         Span::raw(" ".repeat(PREFIX_COLS as usize)),
@@ -417,6 +458,7 @@ fn card_lines(
             pad(&workspace, ws_cols),
             Style::default().fg(Color::Cyan),
         ),
+        Span::styled(tail, Style::default().fg(Color::DarkGray)),
         Span::raw(" ".repeat(AGE_COLS as usize)),
     ]);
 
@@ -579,6 +621,8 @@ mod tests {
             label: String::new(),
             pinned: false,
             agent_known: true,
+            window_id: String::new(),
+            lead_pane: String::new(),
         }
     }
 
@@ -613,6 +657,40 @@ mod tests {
 
     /// The bug this guards: a session restored by `aw resurrect` was missing
     /// from the picker entirely, because it had no activity to filter on.
+    #[test]
+    fn spawned_panes_are_hidden_and_counted_on_their_lead() {
+        let mut lead = pane("%35", "video-editing", "claude", 60, Status::Waiting);
+        lead.lead_pane = "%35".into();
+        let mut kids: Vec<PaneState> = ["%44", "%45", "%46"]
+            .iter()
+            .map(|id| {
+                let mut k = pane(id, "video-editing", "claude", 60, Status::Working);
+                k.lead_pane = "%35".into();
+                k
+            })
+            .collect();
+        let mut all = vec![lead];
+        all.append(&mut kids);
+
+        let listed = active_panes(&all, now());
+        assert_eq!(listed.len(), 1, "only the lead is a jump target");
+        assert_eq!(listed[0].pane_id, "%35");
+
+        let counts = spawned_counts(&all);
+        assert_eq!(counts.get("%35").copied(), Some(3));
+    }
+
+    #[test]
+    fn a_stalled_lead_is_still_offered() {
+        // Stalled is not a reason to hide a session — it is a reason to look.
+        let mut p = pane("%44", "video-editing", "claude", 60, Status::Working);
+        p.lead_pane = "%44".into();
+        p.last_activity = now() - crate::dash::render::STALE_WORKING_AFTER - 60;
+        let out = active_panes(&[p], now());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].shown(now()), Shown::Stalled);
+    }
+
     #[test]
     fn restored_agent_is_listed_even_though_nothing_has_aged() {
         let mut restored = pane("%17", "video-editing", "claude", 0, Status::Idle);
@@ -688,7 +766,7 @@ mod tests {
     }
 
     fn switcher(cards: Vec<PaneState>) -> Switcher {
-        Switcher { cards, cursor: 0 }
+        Switcher { cards, cursor: 0, spawned: Default::default() }
     }
 
     #[test]

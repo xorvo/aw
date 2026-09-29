@@ -224,6 +224,8 @@ mod tests {
             label: String::new(),
             pinned: false,
             agent_known: true,
+            window_id: String::new(),
+            lead_pane: String::new(),
         }
     }
 

@@ -29,6 +29,9 @@
   .working { background:var(--green); box-shadow:0 0 0 3.5px rgba(63,185,80,.20); }
   .waiting { background:var(--amber); box-shadow:0 0 0 3.5px rgba(210,153,34,.28); }
   .idle { background:var(--grey); box-shadow:0 0 0 3.5px rgba(110,118,129,.16); }
+  /* Claimed working, then went silent. Distinct from both working and waiting
+     so it can never be mistaken for either. Matches the terminal palette. */
+  .stalled { background:#bc74de; box-shadow:0 0 0 3.5px rgba(188,116,222,.26); }
   .list { padding:8px 12px 40px; }
   .card { background:var(--panel); border:1px solid #222b38; border-radius:14px; padding:13px 14px;
     margin:8px 0; display:flex; gap:11px; align-items:flex-start; }

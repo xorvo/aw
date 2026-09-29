@@ -520,6 +520,7 @@ mod tests {
             path: "/ws/foo".into(),
             aw_agent: String::new(),
             aw_session_id: String::new(),
+            aw_sidebar: false,
         };
         let panes = vec![
             pane("%1", "aw-foo", "zsh"),    // plain shell

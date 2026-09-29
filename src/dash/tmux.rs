@@ -253,6 +253,10 @@ pub struct PaneInfo {
     pub aw_agent: String,
     /// `@aw_session_id` — the conversation the pane holds, when known.
     pub aw_session_id: String,
+    /// `@aw-sidebar` — set on the pane `aw dash sidebar` spawns. Our own
+    /// UI is definitively not an agent, so the snapshot drops these; a
+    /// sidebar that listed itself as an idle agent inflated every count.
+    pub aw_sidebar: bool,
 }
 
 /// Result of asking tmux for the live pane list. The distinction between
@@ -279,11 +283,11 @@ pub fn list_panes_with_metadata() -> PaneListing {
             "list-panes",
             "-a",
             "-F",
-            // 8 tab-separated fields. Tabs don't appear in any of these.
-            // The trailing two are our own pane options; tmux renders an
+            // 9 tab-separated fields. Tabs don't appear in any of these.
+            // The trailing three are our own pane options; tmux renders an
             // unset option as the empty string, so old panes just come back
             // blank rather than breaking the parse.
-            "#{pane_id}\t#{session_name}\t#{window_name}\t#{pane_title}\t#{pane_current_command}\t#{pane_current_path}\t#{@aw_agent}\t#{@aw_session_id}",
+            "#{pane_id}\t#{session_name}\t#{window_name}\t#{pane_title}\t#{pane_current_command}\t#{pane_current_path}\t#{@aw_agent}\t#{@aw_session_id}\t#{@aw-sidebar}",
         ])
         .stderr(Stdio::null())
         .output();
@@ -303,7 +307,7 @@ pub fn list_panes_with_metadata() -> PaneListing {
 }
 
 fn parse_pane_line(line: &str) -> Option<PaneInfo> {
-    let parts: Vec<&str> = line.splitn(8, '\t').collect();
+    let parts: Vec<&str> = line.splitn(9, '\t').collect();
     // The last field is a path, which can itself contain no tabs, so a short
     // line means a tmux too old to know our options — still worth parsing.
     if parts.len() < 6 {
@@ -318,6 +322,7 @@ fn parse_pane_line(line: &str) -> Option<PaneInfo> {
         path: parts[5].into(),
         aw_agent: parts.get(6).copied().unwrap_or_default().into(),
         aw_session_id: parts.get(7).copied().unwrap_or_default().into(),
+        aw_sidebar: parts.get(8).copied().unwrap_or_default() == "1",
     })
 }
 

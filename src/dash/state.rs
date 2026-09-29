@@ -212,6 +212,14 @@ impl Snapshot {
                 //     overlaying hook state when present. tmux fields
                 //     always win over the file's stored values.
                 for tp in &panes {
+                    // Our own sidebar pane is not an agent. It lives in an
+                    // `aw-*` session and runs `aw`, so without this it gets
+                    // synthesized into a row named after the window and
+                    // counted as idle — in the sidebar's own display, the
+                    // popup, and the status line.
+                    if tp.aw_sidebar {
+                        continue;
+                    }
                     let workspace = match tp.session.strip_prefix("aw-") {
                         Some(w) => w.to_string(),
                         None => continue,
@@ -363,6 +371,27 @@ impl Snapshot {
 
     /// Counts (working, waiting, idle). Parked panes are excluded — bash
     /// equivalent of "set aside, don't bug me about these."
+    /// Counts restricted to panes we can actually identify as agents.
+    ///
+    /// [`Self::counts`] includes every pane in an `aw-*` session, which
+    /// means a plain shell you happen to have open is tallied as an idle
+    /// agent (see [`PaneState::agent_known`]). The sidebar is pinned all
+    /// day, so that noise is the difference between a useful readout and
+    /// one you learn to ignore.
+    pub fn agent_counts(&self) -> (usize, usize, usize) {
+        let mut w = 0;
+        let mut wt = 0;
+        let mut i = 0;
+        for e in self.entries.iter().filter(|e| e.agent_known && !e.parked) {
+            match e.status {
+                Status::Working => w += 1,
+                Status::Waiting => wt += 1,
+                Status::Idle => i += 1,
+            }
+        }
+        (w, wt, i)
+    }
+
     pub fn counts(&self) -> (usize, usize, usize) {
         let mut w = 0;
         let mut wt = 0;

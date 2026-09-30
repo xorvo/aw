@@ -94,6 +94,28 @@ out pane ids monotonically and never reuses them within a server, so the lowest
 is the pane the window started with. Pane *index* would be wrong: it tracks
 on-screen position, which moves when panes are rearranged.
 
+### Folding
+
+Helpers are **folded away by default**, and the lead carries a dim `+N` badge
+counting them. You monitor sub-agents, you don't drive them, so a window of
+thirteen helpers used to mean thirteen presses of `j` to reach the next agent
+you actually talk to. `Space` on the lead unfolds the group; `Space` again
+folds it.
+
+`+N` counts what is folded, not what exists, so it disappears once the group is
+open. It is paid for out of the name column, like the indent, so no column moves.
+
+Two helpers are never folded: a **waiting** one and a **stalled** one. A
+sub-agent that stops on a permission prompt can only be answered in its own
+pane, so hiding that row would hide the one thing you have to act on. They keep
+their own row and are not counted in `+N`.
+
+The fold key asks the snapshot whether a lead has helpers, not the row's `+N`.
+Reading the badge would make folding a one-way door: the badge is zero once the
+group is open, so the guard would refuse to fold it back.
+
+### Indentation
+
 `aw dash` shows the whole group, each lead followed by what it spawned. A
 spawned pane carries a dim `│` gutter, and its **whole** left edge shifts three
 columns — status glyph included. An earlier version indented only the name and
@@ -109,7 +131,10 @@ that renders panes grouped by workspace.
 
 `aw switch` and the phone app list leads only, with `N spawned` on the lead,
 because those exist for jumping and five helpers are one piece of work rather
-than five places to go.
+than five places to go. Both read the same `PaneState::spawned`, which
+`assign_group_leads` derives once and nothing else computes. There it is the
+full count, since neither surface ever lists a helper; the dash row builder
+rewrites it on its own clones to mean "helpers this row is standing in for".
 
 ## When state files are removed
 
@@ -206,7 +231,7 @@ live alongside at `~/.cache/aw/parked/<pane_id>` — empty file = parked.
 | `p` | toggle parked (parked panes don't count toward "needs attention") |
 | `n` | jump to oldest waiting pane (or idle if none waiting) |
 | `r` | refresh |
-| `Space` | collapse / expand workspace under cursor |
+| `Space` | fold / unfold the row under the cursor: a workspace header, or a lead's spawned helpers |
 | `q` / `Esc` | quit |
 
 ## `aw switch` — the quick switcher

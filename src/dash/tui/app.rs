@@ -111,6 +111,12 @@ pub struct App {
     pub filter: String,
     pub show_preview: bool,
     pub collapsed: std::collections::HashSet<String>,
+    /// Lead pane ids whose spawned helpers are shown. Helpers are folded away by
+    /// default: you monitor them, you don't jump into them, so leaving them in
+    /// the list only makes you press `j` past a dozen rows to reach the next
+    /// agent you actually drive. The lead keeps a `+N` badge so the group is
+    /// never silently smaller than it looks.
+    pub expanded: std::collections::HashSet<String>,
     /// Whether the Dormant section is rendered. Toggled with `H`.
     pub show_dormant: bool,
     /// First displayed line in the Agents pane (counted in rendered lines,
@@ -137,6 +143,7 @@ impl App {
             filter: String::new(),
             show_preview: false,
             collapsed: std::collections::HashSet::new(),
+            expanded: std::collections::HashSet::new(),
             show_dormant: true,
             scroll_offset: Cell::new(0),
             snapshot: snap,
@@ -169,12 +176,7 @@ impl App {
         self.snapshot = snap;
         self.rebuild_rows();
         if let Some(p) = prior_pane {
-            if let Some(idx) = self
-                .rows
-                .iter()
-                .position(|r| matches!(r, Row::Pane(s) if s.pane_id == p))
-            {
-                self.selected = idx;
+            if self.select_pane(&p) {
                 return;
             }
         }
@@ -251,6 +253,7 @@ impl App {
 
     fn rebuild_rows_by_workspace(&mut self) {
         let mut rows = Vec::new();
+        let now = crate::dash::state::now_epoch();
         let groups = group_filtered(&self.snapshot.entries, &self.filter);
         for (workspace, panes) in groups {
             let collapsed = self.collapsed.contains(&workspace);
@@ -268,8 +271,39 @@ impl App {
                 pinned,
             });
             if !collapsed {
-                for p in panes {
-                    rows.push(Row::Pane(p.clone()));
+                let expanded = &self.expanded;
+                // A helper earns its own row when its group is open, or when it
+                // needs a human. Waiting is the case that matters: a sub-agent
+                // stops on a permission prompt that can only be answered in its
+                // own pane, so folding that away would hide the one row you have
+                // to act on. Stalled is the same argument for a pane that
+                // latched `working` and died. `is_lead` is true whenever
+                // grouping data is missing, so nothing is hidden for lack of a
+                // window id.
+                let shows = |p: &PaneState| {
+                    p.is_lead()
+                        || expanded.contains(&p.lead_pane)
+                        || matches!(
+                            p.shown(now),
+                            crate::dash::render::Shown::Waiting
+                                | crate::dash::render::Shown::Stalled
+                        )
+                };
+                let mut folded: std::collections::HashMap<String, usize> =
+                    std::collections::HashMap::new();
+                for p in panes.iter().filter(|p| !shows(p)) {
+                    *folded.entry(p.lead_pane.clone()).or_insert(0) += 1;
+                }
+                for p in panes.iter().filter(|p| shows(p)) {
+                    let mut row = p.clone();
+                    // On a dash row `spawned` means "helpers this row stands
+                    // in for", which is the folded ones rather than all of
+                    // them. `aw switch` and the phone never list helpers at
+                    // all, so there the same field is the full count.
+                    if row.is_lead() {
+                        row.spawned = folded.get(&row.pane_id).copied().unwrap_or(0);
+                    }
+                    rows.push(Row::Pane(row));
                 }
             }
         }
@@ -365,14 +399,66 @@ impl App {
         self.rebuild_rows();
     }
 
-    pub fn toggle_collapse(&mut self) {
-        if let Some(Row::Header { workspace, .. }) = self.rows.get(self.selected).cloned() {
-            if self.collapsed.contains(&workspace) {
-                self.collapsed.remove(&workspace);
-            } else {
-                self.collapsed.insert(workspace);
+    /// Whether any pane reports `lead_pane == pane_id`, i.e. this lead has a
+    /// group to fold. Read from the snapshot so it is independent of what is
+    /// currently on screen.
+    fn has_helpers(&self, pane_id: &str) -> bool {
+        self.snapshot
+            .entries
+            .iter()
+            .any(|e| !e.is_lead() && e.lead_pane == pane_id)
+    }
+
+    /// Put the cursor on `pane_id`, reporting whether that row exists. A folded
+    /// helper has no row, so callers must cope with `false`.
+    fn select_pane(&mut self, pane_id: &str) -> bool {
+        match self
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Pane(s) if s.pane_id == pane_id))
+        {
+            Some(idx) => {
+                self.selected = idx;
+                true
             }
-            self.rebuild_rows();
+            None => false,
+        }
+    }
+
+    /// Fold or unfold whatever the cursor is on: a workspace header, or a lead
+    /// that has spawned helpers. One key for both, because "space folds this
+    /// row" is a single thing to remember.
+    pub fn toggle_collapse(&mut self) {
+        match self.rows.get(self.selected).cloned() {
+            Some(Row::Header { workspace, .. }) => {
+                if self.collapsed.contains(&workspace) {
+                    self.collapsed.remove(&workspace);
+                } else {
+                    self.collapsed.insert(workspace);
+                }
+                self.rebuild_rows();
+            }
+            // Only a lead can be folded, and only one with something to fold.
+            // A helper row does nothing here rather than folding its parent out
+            // from under the cursor.
+            //
+            // Asks the snapshot, not the row: `spawned` on a row is a display
+            // number that drops to zero once the group is open, which would
+            // make space a one-way door.
+            Some(Row::Pane(p)) if p.is_lead() && self.has_helpers(&p.pane_id) => {
+                if self.expanded.contains(&p.pane_id) {
+                    self.expanded.remove(&p.pane_id);
+                } else {
+                    self.expanded.insert(p.pane_id.clone());
+                }
+                self.rebuild_rows();
+                // Keep the cursor on the lead: rebuilding shifts every row
+                // below it, and landing somewhere else after a fold is
+                // disorienting.
+                self.select_pane(&p.pane_id);
+                self.clamp_selection();
+            }
+            _ => {}
         }
     }
 
@@ -786,6 +872,7 @@ mod tests {
             window_id: String::new(),
             server_pid: None,
             lead_pane: String::new(),
+            spawned: 0,
         }
     }
 
@@ -900,6 +987,115 @@ mod tests {
         // One pane per section: j walks them in triage order, never
         // landing on a StatusHeader.
         assert_eq!(seen, vec!["%1", "%2", "%3"]);
+    }
+
+    /// A window of helper panes: `%35` leads, the rest are what it spawned.
+    /// Grouping is derived from the window, exactly as it is at runtime.
+    fn group(ws: &str, statuses: &[Status]) -> Vec<PaneState> {
+        let mut out: Vec<PaneState> = statuses
+            .iter()
+            .enumerate()
+            .map(|(i, st)| {
+                let mut p = pane(&format!("%{}", 35 + i), ws, "claude");
+                p.window_id = "@27".into();
+                p.status = *st;
+                p.last_activity = crate::dash::state::now_epoch();
+                p
+            })
+            .collect();
+        crate::dash::state::assign_group_leads(&mut out);
+        out
+    }
+
+    fn pane_ids(app: &App) -> Vec<String> {
+        app.rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Pane(p) => Some(p.pane_id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The point of the whole thing: you never open a sub-agent, so you should
+    /// not have to walk past a dozen of them to reach the next agent you drive.
+    #[test]
+    fn spawned_helpers_are_folded_away_by_default() {
+        let entries = group("video-editing", &[Status::Waiting, Status::Idle, Status::Idle, Status::Working]);
+        let app = App::new(snap(entries, vec![]));
+        assert_eq!(pane_ids(&app), vec!["%35"], "only the lead takes a row");
+        let lead = app.selected_pane().unwrap();
+        assert_eq!(lead.spawned, 3, "the lead reports how many it is standing in for");
+    }
+
+    /// Space folds whatever the cursor is on, and the cursor must not move —
+    /// unfolding shifts every row below the lead.
+    #[test]
+    fn space_unfolds_a_lead_and_leaves_the_cursor_on_it() {
+        let entries = group("video-editing", &[Status::Waiting, Status::Idle, Status::Idle]);
+        let mut app = App::new(snap(entries, vec![]));
+        app.selected = app.rows.iter().position(|r| matches!(r, Row::Pane(_))).unwrap();
+
+        app.toggle_collapse();
+        assert_eq!(pane_ids(&app), vec!["%35", "%36", "%37"], "helpers appear");
+        assert_eq!(app.selected_pane().unwrap().pane_id, "%35", "cursor stays put");
+        assert_eq!(app.selected_pane().unwrap().spawned, 0, "nothing left folded");
+
+        app.toggle_collapse();
+        assert_eq!(pane_ids(&app), vec!["%35"], "and folds back");
+        assert_eq!(app.selected_pane().unwrap().pane_id, "%35");
+    }
+
+    /// The one thing folding must never hide. A sub-agent stops on a permission
+    /// prompt that can only be answered in its own pane.
+    #[test]
+    fn a_helper_that_needs_a_human_is_never_folded() {
+        let entries = group("video-editing", &[Status::Working, Status::Idle, Status::Waiting]);
+        let app = App::new(snap(entries, vec![]));
+        assert_eq!(
+            pane_ids(&app),
+            vec!["%35", "%37"],
+            "the waiting helper keeps its row, the idle one does not"
+        );
+        let lead = app.rows.iter().find_map(|r| match r {
+            Row::Pane(p) if p.pane_id == "%35" => Some(p),
+            _ => None,
+        }).unwrap();
+        assert_eq!(lead.spawned, 1, "a helper that is still visible is not counted as folded");
+    }
+
+    /// A stalled helper latched `working` and died. Same argument as waiting.
+    #[test]
+    fn a_stalled_helper_is_never_folded() {
+        let mut entries = group("video-editing", &[Status::Idle, Status::Working]);
+        entries[1].last_activity =
+            crate::dash::state::now_epoch() - crate::dash::render::STALE_WORKING_AFTER - 60;
+        let app = App::new(snap(entries, vec![]));
+        assert_eq!(pane_ids(&app), vec!["%35", "%36"]);
+    }
+
+    /// Pressing space on a helper must not fold its parent out from under the
+    /// cursor, which would move the selection somewhere the user did not aim.
+    #[test]
+    fn space_on_a_helper_row_does_nothing() {
+        let entries = group("video-editing", &[Status::Idle, Status::Idle]);
+        let mut app = App::new(snap(entries, vec![]));
+        app.selected = app.rows.iter().position(|r| matches!(r, Row::Pane(_))).unwrap();
+        app.toggle_collapse();
+        assert_eq!(pane_ids(&app), vec!["%35", "%36"]);
+        let helper = app.rows.iter().position(|r| matches!(r, Row::Pane(p) if p.pane_id == "%36")).unwrap();
+        app.selected = helper;
+        app.toggle_collapse();
+        assert_eq!(pane_ids(&app), vec!["%35", "%36"], "unchanged");
+        assert_eq!(app.selected_pane().unwrap().pane_id, "%36", "cursor unchanged");
+    }
+
+    /// Folding is a dash concern. `aw switch` and the phone never list helpers
+    /// at all, so there the same field stays the full count.
+    #[test]
+    fn a_lone_pane_carries_no_badge() {
+        let app = App::new(snap(group("solo", &[Status::Idle]), vec![]));
+        assert_eq!(app.selected_pane().unwrap().spawned, 0);
     }
 
     #[test]

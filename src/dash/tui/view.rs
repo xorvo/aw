@@ -489,7 +489,20 @@ fn line_for_row(row: &Row, selected: bool) -> Line<'static> {
             // deliberately does not indent — see the note there.
             const TREE_INDENT: usize = 3;
             let lead = p.is_lead();
-            let name_width = if lead { 18 } else { 18 - TREE_INDENT };
+            // `+N` counts the helpers folded away under this lead, so it is the
+            // only thing saying those panes exist. It disappears when the group
+            // is unfolded, because then you can see them. A waiting or stalled
+            // helper is never folded, so it is never part of this number.
+            let badge = if lead && p.spawned > 0 {
+                format!("+{} ", p.spawned)
+            } else {
+                String::new()
+            };
+            // The badge is paid for out of the name column, exactly like the
+            // indent, so the age and prompt columns stay put across every row.
+            let name_width = 18usize
+                .saturating_sub(if lead { 0 } else { TREE_INDENT })
+                .saturating_sub(badge.chars().count());
             let label_col = format!("{:<width$}", truncate(label_src, name_width), width = name_width);
             // Empty for a lead: the gutter is the indent, so giving both the
             // same width is what made the first attempt fail — every glyph
@@ -506,6 +519,7 @@ fn line_for_row(row: &Row, selected: bool) -> Line<'static> {
                 Span::styled(glyph.to_string(), glyph_style),
                 Span::raw("  "),
                 Span::styled(label_col, Style::default().fg(Color::White)),
+                Span::styled(badge, Style::default().fg(Color::DarkGray)),
                 Span::raw(" "),
                 Span::styled(
                     format!("{:<4}", humanize_age(p.last_activity)),
@@ -683,7 +697,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                 ("r", "refresh"),
                 ("Q", "phone"),
                 ("H", "dormant"),
-                ("␣", "(un)collapse"),
+                ("␣", "fold"),
                 ("q", "quit"),
             ];
             let mut spans: Vec<Span> = Vec::with_capacity(pairs.len() * 4);
@@ -797,6 +811,7 @@ mod tests {
             window_id: String::new(),
             server_pid: None,
             lead_pane: String::new(),
+            spawned: 0,
         }
     }
 

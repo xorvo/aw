@@ -123,17 +123,6 @@ fn stale(p: &PaneState, now: u64) -> bool {
     p.last_activity != 0 && now.saturating_sub(p.last_activity) >= WINDOW_SECS
 }
 
-/// How many panes each lead spawned, keyed by the lead's pane id.
-pub fn spawned_counts(entries: &[PaneState]) -> std::collections::HashMap<String, usize> {
-    let mut out = std::collections::HashMap::new();
-    for p in entries {
-        if !p.is_lead() && !p.lead_pane.is_empty() {
-            *out.entry(p.lead_pane.clone()).or_insert(0) += 1;
-        }
-    }
-    out
-}
-
 /// How the current terminal size is spent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Metrics {
@@ -174,8 +163,6 @@ impl Metrics {
 struct Switcher {
     cards: Vec<PaneState>,
     cursor: usize,
-    /// lead pane id -> how many panes it spawned.
-    spawned: std::collections::HashMap<String, usize>,
 }
 
 impl Switcher {
@@ -183,7 +170,6 @@ impl Switcher {
         Self {
             cards: active_panes(&snap.entries, crate::dash::state::now_epoch()),
             cursor: 0,
-            spawned: spawned_counts(&snap.entries),
         }
     }
 
@@ -193,7 +179,6 @@ impl Switcher {
     fn reload(&mut self, snap: &Snapshot) {
         let anchor = self.cards.get(self.cursor).map(|p| p.pane_id.clone());
         self.cards = active_panes(&snap.entries, crate::dash::state::now_epoch());
-        self.spawned = spawned_counts(&snap.entries);
         self.cursor = anchor
             .and_then(|id| self.cards.iter().position(|p| p.pane_id == id))
             .unwrap_or(0)
@@ -319,7 +304,7 @@ fn render(f: &mut Frame, sw: &Switcher) {
     let end = (offset + m.visible).min(sw.cards.len());
     for (row, i) in (offset..end).enumerate() {
         let card_y = y + row as u16 * CARD_ROWS;
-        let spawned = sw.spawned.get(&sw.cards[i].pane_id).copied().unwrap_or(0);
+        let spawned = sw.cards[i].spawned;
         let (headline, byline) = card_lines(&sw.cards[i], i, i == sw.cursor, &m, spawned);
         draw_line(f, headline, area.x + m.left, card_y, m.width);
         draw_line(f, byline, area.x + m.left, card_y + 1, m.width);
@@ -581,7 +566,6 @@ pub struct Entry {
 pub fn cmd_json() -> Result<()> {
     let snap = Snapshot::load()?;
     let now = crate::dash::state::now_epoch();
-    let spawned = spawned_counts(&snap.entries);
     let rows: Vec<Entry> = active_panes(&snap.entries, now)
         .iter()
         .map(|p| Entry {
@@ -595,7 +579,7 @@ pub fn cmd_json() -> Result<()> {
             age_secs: now.saturating_sub(p.last_activity),
             age: humanize_age(p.last_activity),
             shown: crate::dash::render::shown_label(p.shown(now)),
-            spawned: spawned.get(&p.pane_id).copied().unwrap_or(0),
+            spawned: p.spawned,
         })
         .collect();
     println!("{}", serde_json::to_string_pretty(&rows)?);
@@ -633,6 +617,7 @@ mod tests {
             window_id: String::new(),
             server_pid: None,
             lead_pane: String::new(),
+            spawned: 0,
         }
     }
 
@@ -669,25 +654,24 @@ mod tests {
     /// from the picker entirely, because it had no activity to filter on.
     #[test]
     fn spawned_panes_are_hidden_and_counted_on_their_lead() {
-        let mut lead = pane("%35", "video-editing", "claude", 60, Status::Waiting);
-        lead.lead_pane = "%35".into();
-        let mut kids: Vec<PaneState> = ["%44", "%45", "%46"]
+        // Grouping comes from the tmux window, so seed that and let
+        // `assign_group_leads` derive both the lead and its count.
+        let mut all: Vec<PaneState> = ["%35", "%44", "%45", "%46"]
             .iter()
             .map(|id| {
-                let mut k = pane(id, "video-editing", "claude", 60, Status::Working);
-                k.lead_pane = "%35".into();
-                k
+                let mut p = pane(id, "video-editing", "claude", 60, Status::Working);
+                p.window_id = "@27".into();
+                p
             })
             .collect();
-        let mut all = vec![lead];
-        all.append(&mut kids);
+        all[0].status = Status::Waiting;
+        crate::dash::state::assign_group_leads(&mut all);
 
         let listed = active_panes(&all, now());
         assert_eq!(listed.len(), 1, "only the lead is a jump target");
         assert_eq!(listed[0].pane_id, "%35");
-
-        let counts = spawned_counts(&all);
-        assert_eq!(counts.get("%35").copied(), Some(3));
+        assert_eq!(listed[0].spawned, 3, "the lead carries the count");
+        assert!(all[1..].iter().all(|k| k.spawned == 0), "a helper counts nothing");
     }
 
     #[test]
@@ -776,7 +760,7 @@ mod tests {
     }
 
     fn switcher(cards: Vec<PaneState>) -> Switcher {
-        Switcher { cards, cursor: 0, spawned: Default::default() }
+        Switcher { cards, cursor: 0 }
     }
 
     #[test]

@@ -17,7 +17,6 @@ pub fn sessions_value() -> Result<serde_json::Value> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let spawned = crate::dash::tui::switch::spawned_counts(&snap.entries);
     let mut entries: Vec<(bool, u64, serde_json::Value)> = Vec::with_capacity(snap.entries.len());
     for p in &snap.entries {
         // Leads only, matching `aw switch`: a pane an agent spawned inside its
@@ -44,7 +43,7 @@ pub fn sessions_value() -> Result<serde_json::Value> {
         // What the pane can honestly be said to be doing, which is not always
         // what it last claimed: a `working` latch never renewed is `stalled`.
         v["shown"] = crate::dash::render::shown_label(p.shown(now)).into();
-        v["spawned"] = spawned.get(&p.pane_id).copied().unwrap_or(0).into();
+        v["spawned"] = p.spawned.into();
         entries.push((needs_attention, p.last_activity, v));
     }
     // waiting first, then most recently active
@@ -115,15 +114,17 @@ mod tests {
     #[test]
     fn spawned_panes_are_left_out_of_the_phone_payload() {
         let mut lead = pane("%35", Status::Waiting, 100);
-        lead.lead_pane = "%35".into();
+        lead.window_id = "@27".into();
         let mut kid = pane("%44", Status::Working, 100);
-        kid.lead_pane = "%35".into();
-        let all = vec![lead, kid];
+        kid.window_id = "@27".into();
+        let mut all = vec![lead, kid];
+        // Grouping and the count both come from the window, via one choke point.
+        crate::dash::state::assign_group_leads(&mut all);
         let leads: Vec<&PaneState> = all.iter().filter(|p| p.is_lead()).collect();
         assert_eq!(leads.len(), 1);
         assert_eq!(leads[0].pane_id, "%35");
         assert_eq!(
-            crate::dash::tui::switch::spawned_counts(&all).get("%35").copied(),
+            all.iter().find(|p| p.pane_id == "%35").map(|p| p.spawned),
             Some(1)
         );
     }

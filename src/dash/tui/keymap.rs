@@ -227,6 +227,7 @@ mod tests {
             window_id: String::new(),
             server_pid: None,
             lead_pane: String::new(),
+            spawned: 0,
         }
     }
 

@@ -71,6 +71,12 @@ pub struct PaneState {
     /// to `pane_id` when this *is* the lead. Not persisted.
     #[serde(skip)]
     pub lead_pane: String,
+    /// How many panes this lead spawned — the rest of its tmux window. Zero on
+    /// a spawned pane itself, so `spawned > 0` means "this row stands for a
+    /// group". Derived from the window grouping in `assign_group_leads`, which
+    /// is the only place it is computed; not persisted.
+    #[serde(skip)]
+    pub spawned: usize,
     /// Whether we actually know which agent runs here, as opposed to having
     /// guessed from the tmux label.
     ///
@@ -109,6 +115,7 @@ impl PaneState {
             window_id: String::new(),
             server_pid: None,
             lead_pane: String::new(),
+            spawned: 0,
         }
     }
 
@@ -341,6 +348,7 @@ impl Snapshot {
                             agent_known: agent_for(tp, &hints).is_some(),
                             window_id: tp.window_id.clone(),
                             lead_pane: String::new(),
+                            spawned: 0,
                             // Built from tmux, not from a file, so it is by
                             // definition owned by the server we are talking to.
                             server_pid: live_server_pid,
@@ -550,6 +558,21 @@ pub fn assign_group_leads(entries: &mut [PaneState]) {
             // No window info (tmux unreachable): treat the pane as its own lead
             // so nothing is ever hidden for lack of grouping data.
             None => e.pane_id.clone(),
+        };
+    }
+    // Second pass, because a lead's count depends on every other pane's
+    // `lead_pane` having been resolved first.
+    let mut per_lead: HashMap<String, usize> = HashMap::new();
+    for e in entries.iter() {
+        if !e.is_lead() {
+            *per_lead.entry(e.lead_pane.clone()).or_insert(0) += 1;
+        }
+    }
+    for e in entries.iter_mut() {
+        e.spawned = if e.is_lead() {
+            per_lead.get(&e.pane_id).copied().unwrap_or(0)
+        } else {
+            0
         };
     }
 }

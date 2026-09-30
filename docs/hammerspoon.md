@@ -65,6 +65,30 @@ scales them up and they go soft; a canvas renders at the display's backing
 scale and stays sharp. The system images remain as a fallback if the draw
 fails.
 
+A **working** row spins: its dot is a rotating arc rather than a still pip,
+because working is the one status that means something is happening right now.
+Waiting and idle hold still on purpose, so motion in the list always means the
+same thing.
+
+Nothing in `hs.chooser` animates by itself, since a row takes a static
+`hs.image`. The movement comes from a timer rebuilding the choices, which is why
+`choices` is handed a function rather than a table. Three details make that safe:
+
+- `refreshChoicesCallback(true)` re-applies the current query, so a refresh
+  while you are typing does not discard what you typed.
+- The tick stops itself as soon as the chooser is not visible. Hammerspoon
+  processes run for weeks, and a spinner left ticking in the background would
+  never be noticed.
+- The row list is fetched once, when the picker opens, and reused for every
+  frame. Re-reading `aw switch --json` 25 times a second would reorder the list
+  under your cursor while you were trying to pick from it.
+
+Rotation speed and smoothness are separate knobs: `SPIN_INTERVAL` is how often
+the list is rebuilt, `SPIN_FRAMES` is how many steps make a full turn, and their
+product is the period. The defaults are 40 steps at 25 Hz, so 9° per frame and
+one revolution every 1.6 s. The rebuild measures as sustainable at 50 Hz with a
+dozen rows, so 25 Hz is a choice rather than a limit.
+
 Typing filters on both lines, so `video wait` narrows by workspace and status
 at once. (Searching the subtitle is off by default in `hs.chooser`; the
 generated Lua turns it on.)

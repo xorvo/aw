@@ -187,6 +187,36 @@ mod tests {
         assert!(TEMPLATE.contains("switch --json"));
     }
 
+    /// `hs.chooser` rows take a static image, so the only way a working row can
+    /// move is a timer rebuilding the choices. Three pieces have to survive
+    /// together or the picker goes still (or, worse, spins forever in the
+    /// background), and none of them is obvious from reading one line.
+    #[test]
+    fn template_keeps_the_pieces_the_spinner_needs() {
+        // Choices as a callback, or refreshChoicesCallback has nothing to re-run.
+        assert!(TEMPLATE.contains("chooser:choices(build)"));
+        // `true` preserves the typed query across a refresh.
+        assert!(TEMPLATE.contains("refreshChoicesCallback(true)"));
+        // The tick must stop itself; a Hammerspoon process runs for weeks.
+        assert!(TEMPLATE.contains("timer:stop()"));
+        // An arc, not a filled wedge: the default closes the path via the centre.
+        assert!(TEMPLATE.contains("arcRadii = false"));
+        // Only `working` animates; a still dot is the point for the others.
+        assert!(TEMPLATE.contains("shown == \"working\" and frame or nil"));
+    }
+
+    /// The dot and the word beside it must come from the same place. They did
+    /// not: the label used the derived status and the image used the recorded
+    /// one, so a stalled pane got a working dot next to the word "stalled".
+    #[test]
+    fn template_draws_the_dot_from_the_derived_status() {
+        assert!(
+            !TEMPLATE.contains("status_dot(r.status)"),
+            "dot must not be drawn from the recorded status"
+        );
+        assert!(TEMPLATE.contains("status_dot(shown"));
+    }
+
     #[test]
     fn has_app_checks_every_root() {
         let tmp = TempDir::new().unwrap();

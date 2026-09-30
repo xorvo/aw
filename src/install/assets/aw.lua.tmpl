@@ -167,47 +167,92 @@ end
 local DOT_PT = 36
 local DOT_CACHE = {}
 
--- A filled pip inside a translucent ring of the same hue.
-local function draw_dot(spec)
+-- Spinner geometry. A `working` row gets a rotating arc instead of a still pip,
+-- because "working" is the one status that means something is happening right
+-- now. Waiting and idle hold still on purpose: motion should mean motion.
+--
+-- `hs.chooser` rows take a static `hs.image`, so nothing animates itself. The
+-- movement comes from rebuilding the choices on a timer (see `M.show`); these
+-- are the frames it cycles through.
+-- Two separate knobs, and it is worth keeping them separate: `SPIN_INTERVAL`
+-- is how often the chooser is rebuilt, `SPIN_FRAMES` is how many steps make a
+-- full turn. Their product is the period, so rotation speed and smoothness are
+-- independent.
+--
+-- 40 steps at 25 Hz is 9° per frame and one revolution per 1.6 s. The first
+-- version used 12 steps at 12.5 Hz: the same visual complaint could have come
+-- from either number, but at 30° per frame the step size was the problem, not
+-- the tick rate. Measured on an M-series Mac with 12 rows, the rebuild sustains
+-- 50 Hz without falling behind, so 25 Hz is a deliberate choice rather than a
+-- ceiling — a spinner gains nothing from the other half.
+local SPIN_FRAMES = 40
+local SPIN_INTERVAL = 0.04
+local SPIN_SWEEP = 260
+
+-- A filled pip inside a translucent ring of the same hue, or — when `frame` is
+-- given — a rotating arc in that hue.
+local function draw_dot(spec, frame)
   local c = spec.color
   local mid = DOT_PT / 2
   local canvas = hs.canvas.new({ x = 0, y = 0, w = DOT_PT, h = DOT_PT })
-  canvas:appendElements({
-    type = "circle",
-    action = "stroke",
-    center = { x = mid, y = mid },
-    radius = DOT_PT * 0.34,
-    strokeColor = { red = c.red, green = c.green, blue = c.blue, alpha = 0.30 },
-    strokeWidth = DOT_PT * 0.07,
-  }, {
-    type = "circle",
-    action = "fill",
-    center = { x = mid, y = mid },
-    radius = DOT_PT * 0.21,
-    fillColor = c,
-  })
+  if frame then
+    -- `arcRadii = false` keeps it an arc: the default closes the path back
+    -- through the centre and fills in a pac-man wedge.
+    local start = (frame / SPIN_FRAMES) * 360
+    canvas:appendElements({
+      type = "arc",
+      action = "stroke",
+      center = { x = mid, y = mid },
+      radius = DOT_PT * 0.29,
+      startAngle = start,
+      endAngle = start + SPIN_SWEEP,
+      arcRadii = false,
+      strokeColor = c,
+      strokeWidth = DOT_PT * 0.12,
+      strokeCapStyle = "round",
+    })
+  else
+    canvas:appendElements({
+      type = "circle",
+      action = "stroke",
+      center = { x = mid, y = mid },
+      radius = DOT_PT * 0.34,
+      strokeColor = { red = c.red, green = c.green, blue = c.blue, alpha = 0.30 },
+      strokeWidth = DOT_PT * 0.07,
+    }, {
+      type = "circle",
+      action = "fill",
+      center = { x = mid, y = mid },
+      radius = DOT_PT * 0.21,
+      fillColor = c,
+    })
+  end
   local image = canvas:imageFromCanvas()
   canvas:delete() -- offscreen scaffolding; don't leave it around
   return image
 end
 
-local function status_dot(status)
+-- `frame` nil means the still dot. Every frame is drawn once and kept: twelve
+-- small images is nothing, and redrawing them twelve times a second would not
+-- be.
+local function status_dot(status, frame)
   local spec = STATUS[status]
   if not spec then
     return nil
   end
-  if DOT_CACHE[status] == nil then
+  local key = status .. ":" .. tostring(frame or "still")
+  if DOT_CACHE[key] == nil then
     -- `false` marks "tried and failed" so a broken lookup is attempted once
     -- rather than on every keystroke. A row without an icon is survivable; a
     -- traceback here would take the whole picker down.
-    local ok, img = pcall(draw_dot, spec)
+    local ok, img = pcall(draw_dot, spec, frame)
     if not ok or not img then
       local ok2, sys = pcall(hs.image.imageFromName, spec.system)
       img = ok2 and sys or nil
     end
-    DOT_CACHE[status] = img or false
+    DOT_CACHE[key] = img or false
   end
-  return DOT_CACHE[status] or nil
+  return DOT_CACHE[key] or nil
 end
 
 -- What to show as the row's headline.
@@ -233,19 +278,40 @@ function M.show()
     return
   end
 
-  local choices = {}
+  -- The frame every `working` row is currently drawn at. Closed over by
+  -- `build`, so bumping it and refreshing is the whole animation.
+  local frame = 0
+  local spinning = false
   for _, r in ipairs(rows) do
-    local spec = STATUS[shown_of(r)] or STATUS.idle
-    -- `N spawned` says this row stands for a group without listing the group.
-    local extra = (r.spawned or 0) > 0 and string.format("  ·  %d spawned", r.spawned) or ""
-    choices[#choices + 1] = {
-      text = headline(r),
-      subText = string.format("%s  ·  %s  ·  %s  ·  %s%s",
-        spec.label, r.workspace, r.agent, r.age, extra),
-      image = status_dot(r.status),
-      pane_id = r.pane_id,
-      session = r.session,
-    }
+    if shown_of(r) == "working" then
+      spinning = true
+      break
+    end
+  end
+
+  -- A function rather than a table, which is what lets
+  -- `refreshChoicesCallback` re-run it. The rows themselves are fetched once
+  -- and reused: re-reading `aw switch --json` on every frame would reorder the
+  -- list under the cursor while you are trying to pick from it.
+  local function build()
+    local choices = {}
+    for _, r in ipairs(rows) do
+      local shown = shown_of(r)
+      local spec = STATUS[shown] or STATUS.idle
+      -- `N spawned` says this row stands for a group without listing the group.
+      local extra = (r.spawned or 0) > 0 and string.format("  ·  %d spawned", r.spawned) or ""
+      choices[#choices + 1] = {
+        text = headline(r),
+        subText = string.format("%s  ·  %s  ·  %s  ·  %s%s",
+          spec.label, r.workspace, r.agent, r.age, extra),
+        -- `shown`, not `r.status`: the label right next to it is derived, so a
+        -- stalled pane used to get the working dot beside the word "stalled".
+        image = status_dot(shown, shown == "working" and frame or nil),
+        pane_id = r.pane_id,
+        session = r.session,
+      }
+    end
+    return choices
   end
 
   local chooser = hs.chooser.new(function(choice)
@@ -253,7 +319,7 @@ function M.show()
       M.jump(choice)
     end
   end)
-  chooser:choices(choices)
+  chooser:choices(build)
   -- Everything past `choices` is optional. Wrapped together, searchSubText
   -- first, so that if any setter is missing in some Hammerspoon version the
   -- picker still opens rather than dying on a traceback.
@@ -269,6 +335,28 @@ function M.show()
     chooser:placeholderText("agent, workspace, or status")
   end)
   chooser:show()
+
+  -- Started after `show`, because the tick stops itself the moment the chooser
+  -- is not visible and before `show` it is not. That self-stop is also what
+  -- keeps a stray timer from ticking forever inside a Hammerspoon that stays
+  -- running for weeks.
+  if spinning then
+    local timer
+    timer = hs.timer.doEvery(SPIN_INTERVAL, function()
+      if not chooser:isVisible() then
+        timer:stop()
+        return
+      end
+      frame = (frame + 1) % SPIN_FRAMES
+      -- `true` re-applies the current query, so a refresh mid-typing does not
+      -- throw away what you have typed. The selected row is index-based and
+      -- survives a rebuild, but restore it explicitly rather than trusting the
+      -- table view to keep its highlight.
+      local row = chooser:selectedRow()
+      chooser:refreshChoicesCallback(true)
+      chooser:selectedRow(row)
+    end)
+  end
 end
 
 -- Convenience wrapper so init.lua stays a one-liner.

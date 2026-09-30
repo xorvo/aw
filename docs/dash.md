@@ -273,11 +273,14 @@ on it.
 
 What it shows, and what it deliberately doesn't:
 
-- **Every live agent pane**, with the most recently active first. A pane we
-  know has been quiet for more than 24 hours drops off; a pane with no recorded
-  activity at all does not, because unknown is not the same as old. That second
-  case is the norm straight after `aw resurrect`, and hiding those was a bug —
-  they are exactly the sessions you want to get back to.
+- **Agent panes active in the last 24 hours**, most recently active first. A
+  pane with no recorded activity at all is also left out: it has nothing to
+  filter or sort on, and one rule you can state in a line beats two you have to
+  reason about. The cost is small because `aw resurrect` seeds each pane it
+  recreates with the original's last-activity time, so a restored session keeps
+  its real age instead of arriving blank. What does drop out is a pane `aw`
+  knows only from its `@aw_agent` stamp, with no state file behind it; it
+  reappears the moment any hook fires in it.
 - **Agent panes only.** A pane counts when we know its agent: from hook state,
   from the `@aw_agent` stamp, or from the manifest's record for it under this
   server. The tmux label is not enough to go on — a shell would look like an

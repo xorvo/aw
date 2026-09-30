@@ -71,19 +71,11 @@ const AGE_COLS: u16 = 5;
 /// cards; below [`CARD_ROWS`] we still always draw one card.
 const CHROME_MIN_HEIGHT: u16 = 8;
 
-/// Agent panes worth offering as a jump target, best first.
+/// Agent panes worth offering as a jump target, most recently active first.
 ///
-/// Two groups, in this order:
-///
-///  1. panes with agent activity inside [`WINDOW_SECS`], most recent first;
-///  2. live agent panes with no recorded activity at all.
-///
-/// The second group is the whole reason this isn't a one-line filter. A
-/// session `aw resurrect` restored fires no hook until somebody types in it,
-/// so it has no activity to sort by — but it is a live agent holding a real
-/// conversation, and refusing to list it makes the picker useless for exactly
-/// the sessions you most want to get back to. They sort last, since "no idea
-/// when" should not outrank "two minutes ago".
+/// Requires agent activity inside [`WINDOW_SECS`], which a pane that has never
+/// recorded any does not have. See [`stale`] for why that case is dropped
+/// rather than sorted last.
 ///
 /// A pane counts as an agent pane when [`PaneState::agent_known`] is set: a
 /// hook told us, or the pane carries our `@aw_agent` stamp. Checking `agent`
@@ -102,14 +94,12 @@ pub fn active_panes(entries: &[PaneState], now: u64) -> Vec<PaneState> {
         .filter(|p| !p.parked && p.agent_known && p.is_lead() && !stale(p, now))
         .cloned()
         .collect();
-    // Known activity first, then unknown; within each, newest first. Pane id
-    // breaks ties so the order never flickers between reloads.
+    // Newest first. Pane id breaks ties so the order never flickers between
+    // reloads. Every survivor has a real timestamp, so there is no
+    // unknown-age group left to sort around.
     out.sort_by(|a, b| {
-        let known = (a.last_activity != 0, b.last_activity != 0);
-        known
-            .1
-            .cmp(&known.0)
-            .then_with(|| b.last_activity.cmp(&a.last_activity))
+        b.last_activity
+            .cmp(&a.last_activity)
             .then_with(|| a.pane_id.cmp(&b.pane_id))
     });
     out
@@ -117,10 +107,16 @@ pub fn active_panes(entries: &[PaneState], now: u64) -> Vec<PaneState> {
 
 /// Has this pane's last known activity aged out of the window?
 ///
-/// `last_activity == 0` means "never recorded", which is unknown rather than
-/// old, so it is never stale — that is the restored-session case.
+/// `last_activity == 0` means no hook has ever fired here, and that counts as
+/// out of the window too. It is a small, deliberate loss: a session `aw
+/// resurrect` restored has no activity until somebody types in it, so it stays
+/// out of the picker until then. Rare enough to be worth a filter you can state
+/// in one line instead of a list you have to reason about.
+///
+/// No special case needed for it: `now - 0` is the whole Unix epoch, which is
+/// comfortably past any window.
 fn stale(p: &PaneState, now: u64) -> bool {
-    p.last_activity != 0 && now.saturating_sub(p.last_activity) >= WINDOW_SECS
+    now.saturating_sub(p.last_activity) >= WINDOW_SECS
 }
 
 /// How the current terminal size is spent.
@@ -634,24 +630,22 @@ mod tests {
     }
 
     #[test]
-    fn active_panes_drops_parked_and_shells_but_keeps_never_active_agents() {
+    fn active_panes_drops_parked_shells_and_panes_that_never_reported() {
         let mut parked = pane("%1", "alpha", "claude", 60, Status::Idle);
         parked.parked = true;
-        // A restored agent: live, real conversation, no hook has fired yet.
-        let mut restored = pane("%2", "beta", "claude", 0, Status::Idle);
-        restored.last_activity = 0;
+        // No hook has ever fired here, so there is no activity to go on.
+        let mut silent = pane("%2", "beta", "claude", 0, Status::Idle);
+        silent.last_activity = 0;
         // A plain shell: no agent, so nothing to jump to.
         let mut shell = pane("%4", "delta", "zsh", 0, Status::Idle);
         shell.last_activity = 0;
         shell.agent_known = false;   // label-derived, not a real agent
         let fresh = pane("%3", "gamma", "claude", 60, Status::Idle);
-        let out = active_panes(&[parked, restored, shell, fresh], now());
+        let out = active_panes(&[parked, silent, shell, fresh], now());
         let ids: Vec<&str> = out.iter().map(|p| p.pane_id.as_str()).collect();
-        assert_eq!(ids, vec!["%3", "%2"], "known activity first, restored still listed");
+        assert_eq!(ids, vec!["%3"], "only the pane with real recent activity");
     }
 
-    /// The bug this guards: a session restored by `aw resurrect` was missing
-    /// from the picker entirely, because it had no activity to filter on.
     #[test]
     fn spawned_panes_are_hidden_and_counted_on_their_lead() {
         // Grouping comes from the tmux window, so seed that and let
@@ -685,22 +679,22 @@ mod tests {
         assert_eq!(out[0].shown(now()), Shown::Stalled);
     }
 
+    /// A restored session has no activity until somebody types in it, and is
+    /// deliberately not offered until then. Asked for explicitly: rare, and
+    /// cheaper to lose than to special-case.
     #[test]
-    fn restored_agent_is_listed_even_though_nothing_has_aged() {
-        let mut restored = pane("%17", "video-editing", "claude", 0, Status::Idle);
-        restored.last_activity = 0;
-        let out = active_panes(&[restored], now());
-        assert_eq!(out.len(), 1, "a live agent must be offered as a jump target");
-        assert_eq!(out[0].pane_id, "%17");
+    fn a_pane_that_never_reported_activity_is_not_offered() {
+        let mut silent = pane("%17", "video-editing", "claude", 0, Status::Idle);
+        silent.last_activity = 0;
+        assert!(active_panes(&[silent], now()).is_empty());
     }
 
-    /// Unknown age must not be mistaken for "very old" and dropped.
     #[test]
-    fn stale_only_applies_to_panes_with_a_recorded_time() {
+    fn stale_counts_unknown_age_as_outside_the_window() {
         let n = now();
         let mut never = pane("%1", "a", "claude", 0, Status::Idle);
         never.last_activity = 0;
-        assert!(!stale(&never, n), "never-recorded is unknown, not stale");
+        assert!(stale(&never, n), "no recorded activity is out of the window");
         let old = pane("%2", "a", "claude", WINDOW_SECS + 60, Status::Idle);
         assert!(stale(&old, n));
         let recent = pane("%3", "a", "claude", 60, Status::Idle);

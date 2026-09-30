@@ -94,10 +94,22 @@ out pane ids monotonically and never reuses them within a server, so the lowest
 is the pane the window started with. Pane *index* would be wrong: it tracks
 on-screen position, which moves when panes are rearranged.
 
-`aw dash` shows the whole group, each lead followed by what it spawned, indented
-with `⤷`. `aw switch` and the phone app list leads only, with `N spawned` on the
-lead, because those exist for jumping and five helpers are one piece of work
-rather than five places to go.
+`aw dash` shows the whole group, each lead followed by what it spawned. A
+spawned pane carries a dim `│` gutter, and its **whole** left edge shifts three
+columns — status glyph included. An earlier version indented only the name and
+left every glyph in one column, which made the rows read as a flat list of
+siblings no matter what marker they carried. The name column narrows by the
+same three, so the age and prompt columns stay aligned across both kinds of row.
+
+The status-grouped sidebar deliberately does *not* indent. It sorts panes by
+what they are doing, so a busy helper appears under `WORKING` while its waiting
+lead is up under `NEEDS YOU`. An indent there would point at an unrelated row.
+That split is what lets the popup indent unconditionally: it is the only surface
+that renders panes grouped by workspace.
+
+`aw switch` and the phone app list leads only, with `N spawned` on the lead,
+because those exist for jumping and five helpers are one piece of work rather
+than five places to go.
 
 ## When state files are removed
 

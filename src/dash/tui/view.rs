@@ -471,17 +471,38 @@ fn line_for_row(row: &Row, selected: bool) -> Line<'static> {
             // fallback) so the column is never blank. 18 cols fits common
             // session names without spilling into the prompt column.
             let label_src = if p.label.is_empty() { p.agent.as_str() } else { p.label.as_str() };
-            // A pane its window's lead spawned is drawn under it, so a group of
+            // A pane its window's lead spawned is drawn *under* it, so a group of
             // helpers reads as one piece of work rather than as peers of every
-            // other session. The lead keeps the full label width.
-            let label_col = if p.is_lead() {
-                format!("{:<18}", truncate(label_src, 18))
+            // other session.
+            //
+            // The indent has to move the whole left edge, glyph included. An
+            // arrow inside the name column was the first attempt and it failed:
+            // with every status glyph still in the same column the rows stayed a
+            // flat list and the arrow read as part of the name. The guide bar
+            // sits in the space the indent opens up, and the name column shrinks
+            // by the same amount so the age and prompt columns stay aligned
+            // across the whole list.
+            // Safe to indent unconditionally: the only surface that renders a
+            // pane through here is the popup, which is always grouped by
+            // workspace, so a spawned pane is always drawn beneath its lead.
+            // The status-grouped sidebar uses `sidebar_pane_line` instead, and
+            // deliberately does not indent — see the note there.
+            const TREE_INDENT: usize = 3;
+            let lead = p.is_lead();
+            let name_width = if lead { 18 } else { 18 - TREE_INDENT };
+            let label_col = format!("{:<width$}", truncate(label_src, name_width), width = name_width);
+            // Empty for a lead: the gutter is the indent, so giving both the
+            // same width is what made the first attempt fail — every glyph
+            // stayed in one column and the rows read as a flat list.
+            let gutter = if lead {
+                Span::raw("")
             } else {
-                format!("{:<18}", format!("⤷ {}", truncate(label_src, 16)))
+                Span::styled(" │ ", Style::default().fg(Color::DarkGray))
             };
             let mut spans = vec![
                 edge,
                 Span::raw("   "),
+                gutter,
                 Span::styled(glyph.to_string(), glyph_style),
                 Span::raw("  "),
                 Span::styled(label_col, Style::default().fg(Color::White)),
@@ -906,6 +927,66 @@ mod tests {
         assert!(text.contains("no agents yet"), "empty state:\n{text}");
     }
 
+    /// A spawned pane must shift its whole left edge, glyph included. The first
+    /// attempt moved only the name, and the rows still read as a flat list.
+    #[test]
+    fn a_spawned_pane_indents_further_than_its_lead_in_the_popup() {
+        let mut lead = pane("%35", "video-editing", "claude");
+        lead.lead_pane = "%35".into();
+        let mut kid = pane("%44", "video-editing", "claude");
+        kid.lead_pane = "%35".into();
+
+        let flat = |p: &PaneState| {
+            let line = line_for_row(&Row::Pane(p.clone()), false);
+            line.spans.iter().map(|s| s.content.to_string()).collect::<String>()
+        };
+        let lead_line = flat(&lead);
+        let kid_line = flat(&kid);
+        let glyph = shown_glyph(Shown::Idle);
+        let lead_at = lead_line.find(glyph).expect("lead glyph");
+        let kid_at = kid_line.find(glyph).expect("child glyph");
+        assert!(
+            kid_at > lead_at,
+            "child glyph must sit right of the lead's ({kid_at} vs {lead_at}):\n{lead_line}\n{kid_line}"
+        );
+    }
+
+    /// The counterpart to the popup's indent, and the reason it is safe there:
+    /// this surface groups by status, so a spawned pane is nowhere near its
+    /// lead and an indent would point at an unrelated row.
+    #[test]
+    fn the_status_grouped_sidebar_does_not_indent_a_spawned_pane() {
+        const W: usize = 42;
+        let mut lead = pane("%35", "video-editing", "claude");
+        lead.lead_pane = "%35".into();
+        let mut kid = pane("%44", "video-editing", "claude");
+        kid.lead_pane = "%35".into();
+
+        let flat = |p: &PaneState| {
+            let line = sidebar_pane_line(p, false, W);
+            line.spans.iter().map(|s| s.content.to_string()).collect::<String>()
+        };
+        let glyph = shown_glyph(Shown::Idle);
+        assert_eq!(flat(&lead).find(glyph), flat(&kid).find(glyph));
+        assert!(flat(&kid).chars().count() <= W);
+    }
+
+    /// Guards the invariant the popup's unconditional indent rests on: the
+    /// sidebar is the only status-grouped surface, and it never sends a pane
+    /// through `line_for_row`.
+    #[test]
+    fn the_sidebar_is_status_grouped_and_the_popup_is_not() {
+        use crate::dash::tui::app::Grouping;
+        assert_eq!(
+            App::new_sidebar(Snapshot { entries: vec![], dormant: vec![] }).grouping,
+            Grouping::Triage
+        );
+        assert_eq!(
+            App::new(Snapshot { entries: vec![], dormant: vec![] }).grouping,
+            Grouping::Workspace
+        );
+    }
+
     #[test]
     fn popup_renders_dormant_section_after_active() {
         let app = App::new(Snapshot {
@@ -1312,6 +1393,9 @@ fn sidebar_pane_line(p: &crate::dash::state::PaneState, selected: bool, width: u
     } else {
         String::new()
     };
+    // No nesting gutter here, unlike the popup: this surface groups by status,
+    // so a spawned pane sits in whichever section matches what it is doing and
+    // is generally nowhere near its lead. An indent would point at the wrong row.
     // Budget: edge + glyph + space + name ... age + parked, right-aligned.
     let fixed = 3 + age.chars().count() + parked.chars().count() + 1;
     let name_budget = width.saturating_sub(fixed).max(6);

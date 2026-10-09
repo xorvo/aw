@@ -32,6 +32,12 @@ pub struct RestorePane {
     /// over at "just now" (or at "—", which is what an absent state file
     /// gets). Not part of the dedupe key.
     pub last_activity: u64,
+    /// The pane's id and window under the *dead* server. Panes that shared a
+    /// window are rebuilt into one window, lowest original id first — that
+    /// pane is the lead the others were split off, so the dashboard groups
+    /// them under it again. Not part of the dedupe key.
+    pub pane_id: String,
+    pub window_id: String,
 }
 
 impl RestorePane {
@@ -44,7 +50,6 @@ impl RestorePane {
 #[derive(Debug, Clone)]
 pub struct RestoreSession {
     pub session: String,
-    pub cwd: String,
     /// Deduped by (agent, cwd, session_id), most recently active first.
     /// Never empty: sessions with no agent to resume are pruned, not
     /// restored as bare shells.
@@ -62,6 +67,10 @@ pub struct Plan {
 
 /// Classify every manifest session. Pure — all tmux/filesystem answers are
 /// passed in — so the decision table is unit-testable without a server.
+///
+/// Sessions to restore come most recently active first: launches are paced,
+/// so a full server takes minutes, and the work you were just doing should be
+/// back first.
 pub fn build_plan(
     manifest: &SessionManifest,
     live_sessions: Option<&[String]>,
@@ -93,10 +102,11 @@ pub fn build_plan(
         }
         plan.restore.push(RestoreSession {
             session: name.clone(),
-            cwd: rec.cwd.clone(),
             panes,
         });
     }
+    // `panes` is newest first, so its head is the session's latest activity.
+    plan.restore.sort_by_key(|r| std::cmp::Reverse(r.panes[0].last_activity));
     plan
 }
 
@@ -108,16 +118,19 @@ pub fn build_plan(
 /// Agent-less panes (plain shells, snapshot-seen tools we don't know) are
 /// dropped — there is nothing to resume in them.
 fn dedupe_panes(rec: &SessionRecord) -> Vec<RestorePane> {
-    let mut panes: Vec<&PaneRecord> = rec.panes.values().filter(|p| !p.agent.is_empty()).collect();
-    panes.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+    let mut panes: Vec<(&String, &PaneRecord)> =
+        rec.panes.iter().filter(|(_, p)| !p.agent.is_empty()).collect();
+    panes.sort_by(|a, b| b.1.last_activity.cmp(&a.1.last_activity));
     let mut out: Vec<RestorePane> = Vec::new();
-    for p in panes {
+    for (pane_id, p) in panes {
         let cwd = if p.cwd.is_empty() { rec.cwd.clone() } else { p.cwd.clone() };
         let candidate = RestorePane {
             agent: p.agent.clone(),
             cwd,
             session_id: p.session_id.clone(),
             last_activity: p.last_activity,
+            pane_id: pane_id.clone(),
+            window_id: p.window_id.clone(),
         };
         // Dedupe on the (agent, cwd, session_id) triple only. Panes are
         // sorted newest-first, so the survivor carries the newest timestamp.
@@ -133,9 +146,10 @@ fn dedupe_panes(rec: &SessionRecord) -> Vec<RestorePane> {
     out
 }
 
-pub fn run(dry_run: bool) -> Result<()> {
+pub fn run(dry_run: bool, per_minute: Option<u32>) -> Result<()> {
     let paths = Paths::from_env()?;
     let config = Config::load_or_default(&paths.config_file);
+    let per_minute = per_minute.unwrap_or_else(|| config.resurrect_per_minute());
     let mut manifest = SessionManifest::load();
     if manifest.sessions.is_empty() {
         println!("Nothing to resurrect — no sessions recorded yet.");
@@ -163,8 +177,19 @@ pub fn run(dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
+    let launches = plan
+        .restore
+        .iter()
+        .flat_map(|r| &r.panes)
+        .filter(|p| p.resume(&config).is_some())
+        .count();
     if dry_run {
-        println!("Would restore {} session(s):", plan.restore.len());
+        println!(
+            "Would restore {} session(s), launching {} agent(s){}:",
+            plan.restore.len(),
+            launches,
+            pace_summary(launches, per_minute)
+        );
         for r in &plan.restore {
             print_session_plan(r, &config);
         }
@@ -174,12 +199,23 @@ pub fn run(dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
+    println!(
+        "🔁 Restoring {} session(s), launching {} agent(s){}",
+        plan.restore.len(),
+        launches,
+        pace_summary(launches, per_minute)
+    );
+    let mut launcher = Launcher {
+        pacer: Pacer::new(per_minute),
+        launched: 0,
+        total: launches,
+        tty: std::io::IsTerminal::is_terminal(&std::io::stdout()),
+    };
     let mut restored = 0usize;
     for r in &plan.restore {
-        match restore_session(r, &config) {
+        match restore_session(r, &config, &mut launcher) {
             Ok(new_panes) => {
                 restored += 1;
-                print_session_plan(r, &config);
                 // Re-key the manifest onto the fresh panes/server so a
                 // second crash resurrects the resurrected sessions too.
                 if let Some(rec) = manifest.sessions.get_mut(&r.session) {
@@ -195,11 +231,16 @@ pub fn run(dry_run: bool) -> Result<()> {
                                     cwd: p.cwd,
                                     session_id: p.session_id,
                                     last_activity: crate::dash::state::now_epoch(),
+                                    window_id: p.window_id,
                                 },
                             )
                         })
                         .collect();
                 }
+                // Saved per session, not once at the end: a paced run takes
+                // minutes, and an interrupted one must not forget the
+                // sessions it already brought back.
+                manifest.save()?;
             }
             Err(e) => eprintln!("❌ {} — {}", r.session, e),
         }
@@ -219,6 +260,112 @@ pub fn run(dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+/// `", at most 5/min (about 6 min)"` — or nothing when pacing won't bite.
+fn pace_summary(launches: usize, per_minute: u32) -> String {
+    if per_minute == 0 || launches <= per_minute as usize {
+        return String::new();
+    }
+    // The first `per_minute` go at once; every further batch waits a minute.
+    let minutes = (launches - 1) / per_minute as usize;
+    format!(", at most {}/min (about {} min)", per_minute, minutes)
+}
+
+/// Sliding-window limit on agent launches: at most `per_minute` in any 60s.
+///
+/// What trips the providers' rate limits is starting many agent sessions at
+/// once; creating tmux panes is free, so only launches are counted. Pure in
+/// the clock so the arithmetic is testable.
+struct Pacer {
+    per_minute: u32,
+    /// Times of the most recent launches, oldest first, at most `per_minute`.
+    recent: std::collections::VecDeque<std::time::Instant>,
+}
+
+impl Pacer {
+    const WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
+    fn new(per_minute: u32) -> Self {
+        Self { per_minute, recent: std::collections::VecDeque::new() }
+    }
+
+    /// How long to wait before the next launch may go.
+    fn delay(&self, now: std::time::Instant) -> std::time::Duration {
+        if self.per_minute == 0 || self.recent.len() < self.per_minute as usize {
+            return std::time::Duration::ZERO;
+        }
+        (self.recent[0] + Self::WINDOW).saturating_duration_since(now)
+    }
+
+    fn record(&mut self, now: std::time::Instant) {
+        if self.per_minute == 0 {
+            return;
+        }
+        self.recent.push_back(now);
+        while self.recent.len() > self.per_minute as usize {
+            self.recent.pop_front();
+        }
+    }
+}
+
+/// Paces agent launches and reports each one, so a run that takes minutes
+/// shows where it is and why it is waiting.
+struct Launcher {
+    pacer: Pacer,
+    launched: usize,
+    total: usize,
+    tty: bool,
+}
+
+impl Launcher {
+    /// Block until the rate limit allows another launch, with a live
+    /// countdown on a terminal (one line otherwise, so logs stay readable).
+    fn wait_turn(&self) {
+        use std::io::Write;
+        let mut left = self.pacer.delay(std::time::Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        if !self.tty {
+            println!(
+                "⏳ {}/min limit — waiting {}s before the next launch",
+                self.pacer.per_minute,
+                left.as_secs_f64().ceil() as u64
+            );
+            std::thread::sleep(left);
+            return;
+        }
+        while !left.is_zero() {
+            print!(
+                "\r\x1b[2K⏳ {}/min limit — next launch in {}s ({}/{} launched)",
+                self.pacer.per_minute,
+                left.as_secs_f64().ceil() as u64,
+                self.launched,
+                self.total
+            );
+            let _ = std::io::stdout().flush();
+            std::thread::sleep(left.min(std::time::Duration::from_secs(1)));
+            left = self.pacer.delay(std::time::Instant::now());
+        }
+        print!("\r\x1b[2K");
+        let _ = std::io::stdout().flush();
+    }
+
+    fn launched(&mut self, session: &str, agent: &str, cmd: &str) {
+        self.pacer.record(std::time::Instant::now());
+        self.launched += 1;
+        let width = self.total.to_string().len();
+        println!(
+            "[{:>width$}/{}] 🔁 {} — {} via `{}`",
+            self.launched,
+            self.total,
+            session,
+            agent,
+            cmd,
+            width = width
+        );
+    }
+}
+
 fn print_session_plan(r: &RestoreSession, config: &Config) {
     for p in &r.panes {
         match p.resume(config) {
@@ -228,48 +375,119 @@ fn print_session_plan(r: &RestoreSession, config: &Config) {
     }
 }
 
-/// Create the session and one window per recorded (agent, cwd), typing the
-/// resume command into each. Returns the new pane ids with what they run,
-/// for re-keying the manifest.
-fn restore_session(r: &RestoreSession, config: &Config) -> Result<Vec<(String, RestorePane)>> {
-    let first_cwd = r.panes.first().map(|p| p.cwd.as_str()).unwrap_or(r.cwd.as_str());
-    let first_pane = tmux_out(&[
-        "new-session", "-d", "-P", "-F", "#{pane_id}",
-        "-s", &r.session,
-        "-c", first_cwd,
-    ])?;
-
-    let mut out = Vec::new();
-    for (i, p) in r.panes.iter().enumerate() {
-        let pane_id = if i == 0 {
-            first_pane.clone()
+/// Panes grouped by the window they shared, in the order to recreate them.
+///
+/// Windows come in the order their most recently active pane appears in
+/// `panes` (already newest first), so the session still opens on the freshest
+/// work. Inside a window, panes go in original creation order: the first is
+/// the lead, the rest were split off it. A pane with no recorded window is a
+/// window of its own, which is all a pre-window-tracking manifest can say.
+fn window_groups(panes: &[RestorePane]) -> Vec<Vec<&RestorePane>> {
+    let mut groups: Vec<Vec<&RestorePane>> = Vec::new();
+    for p in panes {
+        let existing = if p.window_id.is_empty() {
+            None
         } else {
-            tmux_out(&[
-                "new-window", "-d", "-P", "-F", "#{pane_id}",
-                "-t", &r.session,
-                "-c", &p.cwd,
-            ])?
+            groups.iter_mut().find(|g| g[0].window_id == p.window_id)
         };
-        if let Some(cmd) = p.resume(config) {
-            // Literal text then a separate Enter; tmux buffers the input
-            // until the pane's shell is ready to read it.
-            tmux_out(&["send-keys", "-t", &pane_id, "-l", "--", &cmd])?;
-            tmux_out(&["send-keys", "-t", &pane_id, "Enter"])?;
+        match existing {
+            Some(g) => g.push(p),
+            None => groups.push(vec![p]),
         }
-        // Give the dashboard something to show before the resumed agent
-        // fires its first hook: without a state file the row reads "—" for
-        // last activity, and the pane's real age is lost to the restart.
-        // Cosmetic, so a failed write must not fail an otherwise good
-        // restore.
-        let st = seeded_pane_state(&r.session, &pane_id, p);
-        let _ = crate::dash::state::pane_state_path(&pane_id)
-            .and_then(|path| st.write_atomic(&path));
-        // The whole point of stamping here: a resumed agent fires no hook until
-        // someone types in it, so without this the pane is anonymous to any
-        // tmux binding that wants to know which conversation it holds.
-        crate::dash::tmux::stamp_pane(&pane_id, &p.agent, &p.session_id);
+    }
+    for g in &mut groups {
+        g.sort_by_key(|p| pane_ordinal(&p.pane_id));
+    }
+    groups
+}
 
-        out.push((pane_id, p.clone()));
+/// Numeric part of a tmux pane id (`%44` -> 44); tmux hands them out in
+/// creation order. Unparseable ids sort last so they never become a lead.
+fn pane_ordinal(pane_id: &str) -> u64 {
+    pane_id.trim_start_matches('%').parse().unwrap_or(u64::MAX)
+}
+
+/// Create the session and one window per recorded window, splitting a
+/// window's helpers back in beside their lead, and type the resume command
+/// into each pane. Returns the new pane ids with what they run — window ids
+/// rewritten to the new ones — for re-keying the manifest.
+///
+/// Each pane is created only once its launch is allowed, so a paced run never
+/// leaves shells sitting idle in the dashboard waiting for their turn.
+fn restore_session(
+    r: &RestoreSession,
+    config: &Config,
+    launcher: &mut Launcher,
+) -> Result<Vec<(String, RestorePane)>> {
+    let mut out = Vec::new();
+    for (gi, group) in window_groups(&r.panes).into_iter().enumerate() {
+        // Split off the newest pane rather than the lead, so the helpers keep
+        // their original on-screen order (a split lands right after its
+        // target).
+        let mut last = String::new();
+        let mut window = String::new();
+        for (i, p) in group.into_iter().enumerate() {
+            let resume = p.resume(config);
+            if resume.is_some() {
+                launcher.wait_turn();
+            }
+            let pane_id = if i > 0 {
+                let id = tmux_out(&[
+                    "split-window", "-d", "-P", "-F", "#{pane_id}",
+                    "-t", &last,
+                    "-c", &p.cwd,
+                ])?;
+                // Re-spread after every split. A detached session is only
+                // 80x24, and repeatedly halving the lead runs out of room after
+                // a handful of helpers.
+                tmux_out(&["select-layout", "-t", &window, "tiled"])?;
+                id
+            } else {
+                let made = if gi == 0 {
+                    tmux_out(&[
+                        "new-session", "-d", "-P", "-F", "#{pane_id} #{window_id}",
+                        "-s", &r.session,
+                        "-c", &p.cwd,
+                    ])?
+                } else {
+                    tmux_out(&[
+                        "new-window", "-d", "-P", "-F", "#{pane_id} #{window_id}",
+                        "-t", &r.session,
+                        "-c", &p.cwd,
+                    ])?
+                };
+                let (id, w) = made.split_once(' ').unwrap_or((made.as_str(), ""));
+                window = w.to_string();
+                id.to_string()
+            };
+            last = pane_id.clone();
+            match resume {
+                Some(cmd) => {
+                    // Literal text then a separate Enter; tmux buffers the
+                    // input until the pane's shell is ready to read it.
+                    tmux_out(&["send-keys", "-t", &pane_id, "-l", "--", &cmd])?;
+                    tmux_out(&["send-keys", "-t", &pane_id, "Enter"])?;
+                    launcher.launched(&r.session, &p.agent, &cmd);
+                }
+                None => println!("   {} — {} (no resume command; shell only)", r.session, p.agent),
+            }
+            // Give the dashboard something to show before the resumed agent
+            // fires its first hook: without a state file the row reads "—" for
+            // last activity, and the pane's real age is lost to the restart.
+            // Cosmetic, so a failed write must not fail an otherwise good
+            // restore.
+            let st = seeded_pane_state(&r.session, &pane_id, p);
+            let _ = crate::dash::state::pane_state_path(&pane_id)
+                .and_then(|path| st.write_atomic(&path));
+            // The whole point of stamping here: a resumed agent fires no hook until
+            // someone types in it, so without this the pane is anonymous to any
+            // tmux binding that wants to know which conversation it holds.
+            crate::dash::tmux::stamp_pane(&pane_id, &p.agent, &p.session_id);
+
+            let mut restored = p.clone();
+            restored.window_id = window.clone();
+            out.push((pane_id, restored));
+        }
     }
     Ok(out)
 }
@@ -402,6 +620,7 @@ fn build_snapshot_records(
                 cwd: p.path.clone(),
                 session_id,
                 last_activity: now,
+                window_id: p.window_id.clone(),
             },
         );
     }
@@ -440,6 +659,7 @@ mod tests {
                     cwd: cwd.to_string(),
                     session_id: sid.to_string(),
                     last_activity: *act,
+                    window_id: String::new(),
                 },
             );
         }
@@ -482,6 +702,8 @@ mod tests {
             cwd: "/ws/crashed".into(),
             session_id: "sid-1".into(),
             last_activity: 5,
+            pane_id: "%1".into(),
+            window_id: String::new(),
         }]);
     }
 
@@ -522,7 +744,7 @@ mod tests {
             aw_agent: String::new(),
             aw_session_id: String::new(),
             aw_sidebar: false,
-            window_id: String::new(),
+            window_id: "@4".into(),
         };
         let panes = vec![
             pane("%1", "aw-foo", "zsh"),    // plain shell
@@ -542,6 +764,7 @@ mod tests {
         assert_eq!(foo.panes["%2"].agent, "claude");
         assert_eq!(foo.panes["%2"].session_id, "sid-9");
         assert_eq!(foo.panes["%3"].agent, "codex");
+        assert_eq!(foo.panes["%3"].window_id, "@4");
         assert!(!foo.panes.contains_key("%4"));
     }
 
@@ -552,6 +775,8 @@ mod tests {
             cwd: "/ws/w".into(),
             session_id: "sid-1".into(),
             last_activity: 1_700_000_000,
+            pane_id: "%3".into(),
+            window_id: "@1".into(),
         };
         let st = seeded_pane_state("aw-w", "%9", &p);
         assert_eq!(st.pane_id, "%9");
@@ -612,10 +837,94 @@ mod tests {
         // The surviving id-less claude carries %2's timestamp (20) — the
         // newest of the three that collapsed (%1=10, %2=20, %4=5).
         assert_eq!(panes, vec![
-            RestorePane { agent: "claude".into(), cwd: "/ws/w".into(), session_id: "sid-a".into(), last_activity: 40 },
-            RestorePane { agent: "claude".into(), cwd: "/ws/w".into(), session_id: "sid-b".into(), last_activity: 30 },
-            RestorePane { agent: "claude".into(), cwd: "/ws/w".into(), session_id: "".into(), last_activity: 20 },
-            RestorePane { agent: "codex".into(), cwd: "/ws/w".into(), session_id: "".into(), last_activity: 15 },
+            RestorePane { agent: "claude".into(), cwd: "/ws/w".into(), session_id: "sid-a".into(), last_activity: 40, pane_id: "%5".into(), window_id: "".into() },
+            RestorePane { agent: "claude".into(), cwd: "/ws/w".into(), session_id: "sid-b".into(), last_activity: 30, pane_id: "%6".into(), window_id: "".into() },
+            RestorePane { agent: "claude".into(), cwd: "/ws/w".into(), session_id: "".into(), last_activity: 20, pane_id: "%2".into(), window_id: "".into() },
+            RestorePane { agent: "codex".into(), cwd: "/ws/w".into(), session_id: "".into(), last_activity: 15, pane_id: "%3".into(), window_id: "".into() },
+        ]);
+    }
+
+    #[test]
+    fn restore_order_is_most_recently_active_session_first() {
+        let m = manifest(vec![
+            ("aw-a", rec("a", Some(7), &[("%1", "claude", "/ws/a", "", 10)])),
+            ("aw-b", rec("b", Some(7), &[("%2", "claude", "/ws/b", "", 30), ("%3", "claude", "/ws/b", "x", 1)])),
+            ("aw-c", rec("c", Some(7), &[("%4", "claude", "/ws/c", "", 20)])),
+        ]);
+        let plan = build_plan(&m, None, None, |_| true);
+        let order: Vec<&str> = plan.restore.iter().map(|r| r.session.as_str()).collect();
+        assert_eq!(order, vec!["aw-b", "aw-c", "aw-a"]);
+    }
+
+    #[test]
+    fn pacer_allows_a_burst_then_waits_out_the_window() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut p = Pacer::new(3);
+        for i in 0..3 {
+            assert_eq!(p.delay(t0 + Duration::from_secs(i)), Duration::ZERO);
+            p.record(t0 + Duration::from_secs(i));
+        }
+        // Fourth launch at t=5: waits until the first (t=0) is 60s old.
+        assert_eq!(p.delay(t0 + Duration::from_secs(5)), Duration::from_secs(55));
+        p.record(t0 + Duration::from_secs(60));
+        // Now the oldest in the window is t=1.
+        assert_eq!(p.delay(t0 + Duration::from_secs(60)), Duration::from_secs(1));
+        assert_eq!(p.delay(t0 + Duration::from_secs(61)), Duration::ZERO);
+    }
+
+    #[test]
+    fn pacer_zero_is_unlimited() {
+        let now = std::time::Instant::now();
+        let mut p = Pacer::new(0);
+        for _ in 0..100 {
+            p.record(now);
+        }
+        assert!(p.delay(now).is_zero());
+    }
+
+    #[test]
+    fn pace_summary_only_when_the_limit_bites() {
+        assert_eq!(pace_summary(5, 5), "");
+        assert_eq!(pace_summary(40, 0), "");
+        assert_eq!(pace_summary(6, 5), ", at most 5/min (about 1 min)");
+        assert_eq!(pace_summary(33, 5), ", at most 5/min (about 6 min)");
+    }
+
+    fn restore_pane(pane_id: &str, window_id: &str, last_activity: u64) -> RestorePane {
+        RestorePane {
+            agent: "claude".into(),
+            cwd: "/ws/w".into(),
+            session_id: format!("sid-{}", pane_id),
+            last_activity,
+            pane_id: pane_id.into(),
+            window_id: window_id.into(),
+        }
+    }
+
+    #[test]
+    fn panes_that_shared_a_window_are_rebuilt_together_lead_first() {
+        // Newest first, as `dedupe_panes` hands them over. The busiest pane is
+        // a helper (%12) in @3; its lead %10 is older, but must still come
+        // first so the others are split off it.
+        let panes = vec![
+            restore_pane("%12", "@3", 50),
+            restore_pane("%4", "@1", 40),
+            restore_pane("%10", "@3", 30),
+            restore_pane("%7", "", 20),
+            restore_pane("%11", "@3", 10),
+            restore_pane("%8", "", 5),
+        ];
+        let ids: Vec<Vec<&str>> = window_groups(&panes)
+            .iter()
+            .map(|g| g.iter().map(|p| p.pane_id.as_str()).collect())
+            .collect();
+        assert_eq!(ids, vec![
+            vec!["%10", "%11", "%12"],
+            vec!["%4"],
+            // No recorded window: never merged with each other.
+            vec!["%7"],
+            vec!["%8"],
         ]);
     }
 }

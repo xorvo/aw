@@ -394,9 +394,13 @@ impl Snapshot {
                     // crash survivors and are left for `aw resurrect`.
                     let live_sessions: std::collections::HashSet<String> =
                         panes.iter().map(|p| p.session.clone()).collect();
+                    let live_windows: std::collections::HashMap<String, String> = panes
+                        .iter()
+                        .map(|p| (p.pane_id.clone(), p.window_id.clone()))
+                        .collect();
                     crate::manifest::prune_with_live_server(
                         &live_sessions,
-                        &live_ids,
+                        &live_windows,
                         crate::dash::tmux::server_pid(),
                     );
                 }

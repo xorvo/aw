@@ -64,6 +64,11 @@ pub enum Cmd {
         /// Show what would be restored without touching tmux
         #[arg(long)]
         dry_run: bool,
+        /// Most agents to launch per minute, to stay under the providers'
+        /// rate limits on new sessions (0 = no limit). Overrides
+        /// `agent_config.resurrect_per_minute`; default 5.
+        #[arg(long, value_name = "N")]
+        per_minute: Option<u32>,
     },
 
     /// Save the live aw session layout to the resurrect manifest (run

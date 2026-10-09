@@ -36,7 +36,16 @@ pub struct Base {
 pub struct AgentConfig {
     #[serde(default)]
     pub resume_commands: BTreeMap<String, String>,
+    /// Most agents `aw resurrect` launches per rolling minute; `0` means no
+    /// limit. Unset means [`DEFAULT_RESURRECT_PER_MINUTE`]. Read it through
+    /// [`Config::resurrect_per_minute`].
+    #[serde(default)]
+    pub resurrect_per_minute: Option<u32>,
 }
+
+/// Resurrecting a whole server's worth of agents at once trips the agent
+/// providers' rate limits on new sessions, so launches are paced by default.
+pub const DEFAULT_RESURRECT_PER_MINUTE: u32 = 5;
 
 /// Built-in resume commands, overridable per agent via
 /// `agent_config.resume_commands`. Two tiers:
@@ -171,6 +180,13 @@ impl Config {
             .map(|(_, c)| c.to_string())
     }
 
+    /// Agent launches per rolling minute for `aw resurrect`; `0` is unlimited.
+    pub fn resurrect_per_minute(&self) -> u32 {
+        self.agent_config
+            .resurrect_per_minute
+            .unwrap_or(DEFAULT_RESURRECT_PER_MINUTE)
+    }
+
     /// Look up a base by name.
     pub fn base(&self, name: &str) -> Option<&Base> {
         self.bases.get(name)
@@ -276,6 +292,15 @@ agent_config:
         assert_eq!(c.resume_command("pi", Some("x")).as_deref(), Some("pi --restore"));
         // Untouched agents keep their defaults.
         assert_eq!(c.resume_command("kimi", None).as_deref(), Some("kimi --continue"));
+    }
+
+    #[test]
+    fn resurrect_rate_defaults_and_overrides() {
+        assert_eq!(Config::parse("").unwrap().resurrect_per_minute(), 5);
+        let c = Config::parse("agent_config:\n  resurrect_per_minute: 12\n").unwrap();
+        assert_eq!(c.resurrect_per_minute(), 12);
+        let c = Config::parse("agent_config:\n  resurrect_per_minute: 0\n").unwrap();
+        assert_eq!(c.resurrect_per_minute(), 0, "0 disables pacing");
     }
 
     #[test]

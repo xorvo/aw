@@ -7,7 +7,7 @@ agent goes with it. `aw resurrect` brings them back.
 
 ```bash
 aw resurrect --dry-run   # show what would be restored
-aw resurrect             # recreate sessions + resume agents
+aw resurrect             # recreate sessions + resume agents (5/min)
 aw snapshot              # save the live layout now (before a planned shutdown)
 ```
 
@@ -41,10 +41,34 @@ agent_config:
     codex: ""                      # plain shell, don't relaunch codex
 ```
 
-Each restored session gets one window per recorded (agent, directory,
-conversation) triple; only id-less duplicates in the same directory
-collapse, since the fallback can only reopen that directory's latest
-conversation anyway.
+Each recorded (agent, directory, conversation) triple gets its own pane;
+only id-less duplicates in the same directory collapse, since the fallback
+can only reopen that directory's latest conversation anyway. Panes that
+shared a tmux window are rebuilt into one window, the original lead first
+and its helpers split in beside it, so the dashboard still shows them as one
+group ([dash.md](dash.md)). The manifest learns each pane's window from its
+hooks and from every dash refresh; panes recorded before window tracking
+existed each get a window of their own.
+
+## Pacing
+
+Starting a whole server's worth of agents at once trips the providers' rate
+limits on new sessions, so launches are paced: at most **5 per rolling
+minute** by default, most recently active session first, so the work you were
+just doing comes back first. Each pane is created only when its agent is
+allowed to start, so nothing sits as an idle shell waiting for its turn. The
+run prints `[n/total]` per launch and a live countdown while it waits; the
+dry run states the estimated duration.
+
+```yaml
+agent_config:
+  resurrect_per_minute: 5   # 0 = no limit
+```
+
+`aw resurrect --per-minute N` overrides it for one run. The manifest is saved
+after each restored session, so interrupting a long run keeps what it has
+already brought back; sessions it never reached are restored by the next
+`aw resurrect`.
 
 ## `aw snapshot` — planned shutdowns
 
@@ -108,6 +132,6 @@ immediately rather than only after you have typed in it.
 
 ## What is *not* restored
 
-Window layouts, scrollback, shell history, and processes other than the
+Exact window layouts (a rebuilt window is re-tiled), scrollback, shell history, and processes other than the
 recorded agents. The workspace files were never at risk — they live in
 `~/agent-workspaces/<name>/` and survive any crash.

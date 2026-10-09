@@ -29,7 +29,7 @@ fn main() -> Result<()> {
         Cmd::Sync => workspace::sync::run(),
         Cmd::Reset { hard } => workspace::reset::run(hard),
         Cmd::OpenHome => workspace::edit::open_home(),
-        Cmd::Resurrect { dry_run } => workspace::resurrect::run(dry_run),
+        Cmd::Resurrect { dry_run, per_minute } => workspace::resurrect::run(dry_run, per_minute),
         Cmd::Snapshot => workspace::resurrect::snapshot(),
 
         Cmd::Switch { json } => {

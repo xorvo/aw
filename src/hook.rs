@@ -106,6 +106,7 @@ pub fn run(agent: AgentKind, event: &str, prompt: Option<String>) -> Result<()> 
         agent_name,
         &pane_id,
         &state.session_id,
+        &tmux::pane_window(&pane_id),
     );
 
     // Also stamp the pane itself, so tmux-side tooling can read what is running

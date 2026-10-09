@@ -39,6 +39,13 @@ pub struct PaneRecord {
     pub session_id: String,
     /// Unix epoch seconds.
     pub last_activity: u64,
+    /// tmux window (`@12`) the pane lived in. Panes sharing a window are one
+    /// group — a lead and the helpers it split off (see
+    /// `dash::state::assign_group_leads`) — and resurrect rebuilds them into
+    /// one window again rather than flattening every pane into its own. Empty
+    /// for records written before this was tracked.
+    #[serde(default)]
+    pub window_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +138,9 @@ pub fn record_session(session: &str, workspace: &str, cwd: &str) {
 
 /// Record an agent event in a pane. Only `aw-*` sessions are tracked —
 /// agents running in personal tmux sessions are none of our business.
+///
+/// An empty `window_id` (tmux didn't answer) keeps whatever was recorded
+/// before rather than erasing the pane's grouping.
 pub fn record_pane(
     session: &str,
     workspace: &str,
@@ -138,6 +148,7 @@ pub fn record_pane(
     agent: &str,
     pane_id: &str,
     session_id: &str,
+    window_id: &str,
 ) {
     if !session.starts_with("aw-") {
         return;
@@ -153,6 +164,10 @@ pub fn record_pane(
     if pid.is_some() {
         rec.server_pid = pid;
     }
+    let window_id = match rec.panes.get(pane_id) {
+        Some(prev) if window_id.is_empty() => prev.window_id.clone(),
+        _ => window_id.to_string(),
+    };
     rec.panes.insert(
         pane_id.to_string(),
         PaneRecord {
@@ -160,6 +175,7 @@ pub fn record_pane(
             cwd: cwd.to_string(),
             session_id: session_id.to_string(),
             last_activity: now,
+            window_id,
         },
     );
     let _ = m.save();
@@ -207,10 +223,13 @@ pub fn remove_session(session: &str) {
 /// opened a plain tmux after a reboot).
 ///
 /// - a recorded session absent from `live_sessions` → deliberately killed → dropped
-/// - a recorded pane absent from `live_pane_ids` → agent/pane exited → dropped
+/// - a recorded pane absent from `live_panes` → agent/pane exited → dropped
+/// - a surviving pane's window is refreshed from `live_panes` (pane id →
+///   window id), so a pane moved between windows after its last hook is
+///   resurrected where it actually was
 pub fn prune_with_live_server(
     live_sessions: &std::collections::HashSet<String>,
-    live_pane_ids: &std::collections::HashSet<String>,
+    live_panes: &std::collections::HashMap<String, String>,
     live_server_pid: Option<u32>,
 ) {
     let pid = match live_server_pid {
@@ -228,7 +247,16 @@ pub fn prune_with_live_server(
             return false;
         }
         let before = rec.panes.len();
-        rec.panes.retain(|pane_id, _| live_pane_ids.contains(pane_id));
+        rec.panes.retain(|pane_id, p| match live_panes.get(pane_id) {
+            None => false,
+            Some(w) => {
+                if !w.is_empty() && *w != p.window_id {
+                    p.window_id = w.clone();
+                    dirty = true;
+                }
+                true
+            }
+        });
         if rec.panes.len() != before {
             dirty = true;
         }
@@ -243,7 +271,7 @@ pub fn prune_with_live_server(
 mod tests {
     use super::*;
     use serial_test::serial;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use tempfile::TempDir;
 
     fn with_state_dir<F: FnOnce()>(f: F) {
@@ -271,6 +299,7 @@ mod tests {
                         cwd: rec.cwd.clone(),
                         session_id: String::new(),
                         last_activity: 100,
+                        window_id: String::new(),
                     },
                 );
             }
@@ -295,7 +324,7 @@ mod tests {
     #[serial]
     fn record_pane_ignores_non_aw_sessions() {
         with_state_dir(|| {
-            record_pane("main", "x", "/x", "claude", "%1", "");
+            record_pane("main", "x", "/x", "claude", "%1", "", "@1");
             assert!(SessionManifest::load().sessions.is_empty());
         });
     }
@@ -304,12 +333,23 @@ mod tests {
     #[serial]
     fn record_pane_roundtrips() {
         with_state_dir(|| {
-            record_pane("aw-foo", "foo", "/ws/foo", "claude", "%3", "sid-123");
+            record_pane("aw-foo", "foo", "/ws/foo", "claude", "%3", "sid-123", "@2");
             let m = SessionManifest::load();
             let rec = &m.sessions["aw-foo"];
             assert_eq!(rec.workspace, "foo");
             assert_eq!(rec.panes["%3"].agent, "claude");
             assert_eq!(rec.panes["%3"].session_id, "sid-123");
+            assert_eq!(rec.panes["%3"].window_id, "@2");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn record_pane_without_a_window_keeps_the_recorded_one() {
+        with_state_dir(|| {
+            record_pane("aw-foo", "foo", "/ws/foo", "claude", "%3", "", "@2");
+            record_pane("aw-foo", "foo", "/ws/foo", "claude", "%3", "", "");
+            assert_eq!(SessionManifest::load().sessions["aw-foo"].panes["%3"].window_id, "@2");
         });
     }
 
@@ -337,7 +377,8 @@ mod tests {
                 ("aw-unknown", None, &[]),
             ]);
             let live_sessions: HashSet<String> = ["aw-live".to_string()].into();
-            let live_panes: HashSet<String> = ["%2".to_string()].into();
+            let live_panes: HashMap<String, String> =
+                [("%2".to_string(), "@5".to_string())].into();
             prune_with_live_server(&live_sessions, &live_panes, Some(42));
 
             let m = SessionManifest::load();
@@ -347,6 +388,8 @@ mod tests {
             let live = &m.sessions["aw-live"];
             assert_eq!(live.panes.len(), 1);
             assert!(live.panes.contains_key("%2"));
+            // The surviving pane picks up the window tmux reports it in now.
+            assert_eq!(live.panes["%2"].window_id, "@5");
         });
     }
 
@@ -355,7 +398,7 @@ mod tests {
     fn prune_without_live_pid_is_a_noop() {
         with_state_dir(|| {
             seed(&[("aw-foo", Some(42), &[("%1", "claude")])]);
-            prune_with_live_server(&HashSet::new(), &HashSet::new(), None);
+            prune_with_live_server(&HashSet::new(), &HashMap::new(), None);
             assert!(SessionManifest::load().sessions.contains_key("aw-foo"));
         });
     }

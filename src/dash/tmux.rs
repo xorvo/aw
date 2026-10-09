@@ -161,14 +161,18 @@ pub fn current_pane() -> Option<String> {
 
 /// Resolve session name for a pane id. Empty string if tmux/pane is gone.
 pub fn pane_session(pane_id: &str) -> String {
+    pane_format(pane_id, "#{session_name}")
+}
+
+/// Resolve the window id (`@12`) holding a pane. Empty string if tmux/pane
+/// is gone.
+pub fn pane_window(pane_id: &str) -> String {
+    pane_format(pane_id, "#{window_id}")
+}
+
+fn pane_format(pane_id: &str, format: &str) -> String {
     tmux_command()
-        .args([
-            "display-message",
-            "-p",
-            "-t",
-            pane_id,
-            "#{session_name}",
-        ])
+        .args(["display-message", "-p", "-t", pane_id, format])
         .stderr(Stdio::null())
         .output()
         .ok()

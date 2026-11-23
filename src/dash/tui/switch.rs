@@ -612,6 +612,7 @@ mod tests {
             agent_known: true,
             window_id: String::new(),
             server_pid: None,
+            agent_pid: None,
             lead_pane: String::new(),
             spawned: 0,
         }

@@ -47,42 +47,57 @@ pub fn pane_is_gone(pane_id: &str) -> bool {
 ///
 /// Our state files already hold this, but reading them means knowing `aw`'s
 /// cache layout. tmux options are where other tmux tooling naturally looks —
-/// a "fork this session" key binding, a status-line format — and they are
-/// available the moment the pane exists, with no hook needing to have fired.
-/// That gap is real: a session restored by `aw resurrect` is invisible to
-/// hook-driven tooling until someone types in it.
+/// a "fork this session" key binding, a status-line format. `aw resurrect`
+/// stamps a pane before its agent has started, so the pane is labelled from
+/// the moment it exists.
 ///
-/// Namespaced `@aw_*` so we never write an option another tool owns. In
-/// particular we do *not* touch `@claude_session_id`: when Claude resumes a
-/// conversation it mints a fresh id, so its own hook is the authority on the
-/// current one and ours would be stale.
+/// Options outlive the process that set them, so readers must check them
+/// against what is running: `@aw_agent_pid` names the process that reported
+/// them (see docs/dash.md, "Pane options").
+///
+/// Namespaced `@aw_*` so we never write an option another tool owns, such as
+/// `@claude_session_id` from a Claude `SessionStart` hook.
 ///
 /// Best effort — the pane may be gone, and this is metadata, not state.
-pub fn stamp_pane(pane_id: &str, agent: &str, session_id: &str) {
+pub fn stamp_pane(pane_id: &str, agent: &str, session_id: &str, agent_pid: Option<u32>) {
     if pane_id.is_empty() {
         return;
     }
-    for (name, value) in pane_stamps(agent, session_id) {
-        let _ = tmux_command()
-            .args(["set-option", "-p", "-t", pane_id, name, &value])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+    for (name, value) in pane_stamps(agent, session_id, agent_pid) {
+        let mut cmd = tmux_command();
+        cmd.args(["set-option", "-p", "-t", pane_id]);
+        match &value {
+            Some(v) => cmd.args([name, v.as_str()]),
+            None => cmd.args(["-u", name]),
+        };
+        let _ = cmd.stdout(Stdio::null()).stderr(Stdio::null()).status();
     }
 }
 
-/// Options to set for a pane. Pure, so the "skip what we don't know" rule is
-/// testable without a tmux server: writing an empty value would claim we know
-/// the pane runs an unnamed agent with no conversation.
-pub(crate) fn pane_stamps(agent: &str, session_id: &str) -> Vec<(&'static str, String)> {
-    let mut out = Vec::new();
-    if !agent.is_empty() {
-        out.push(("@aw_agent", agent.to_string()));
+/// Options to set (`Some`) or unset (`None`) for a pane. Pure, so the rules
+/// are testable without a tmux server:
+///
+/// - no agent → touch nothing: we know nothing about the pane.
+/// - an agent but no conversation id → *unset* `@aw_session_id`. Leaving it
+///   would let the id of whatever ran here before (say, a Claude conversation
+///   in a pane that now runs Codex) pass for this agent's, and a fork binding
+///   would resume the wrong conversation in the wrong tool.
+/// - `@aw_agent_pid` is the agent process that told us, so a reader can check
+///   the stamps against what is running now; unknown → unset, same reason.
+pub(crate) fn pane_stamps(
+    agent: &str,
+    session_id: &str,
+    agent_pid: Option<u32>,
+) -> Vec<(&'static str, Option<String>)> {
+    if agent.is_empty() {
+        return Vec::new();
     }
-    if !session_id.is_empty() {
-        out.push(("@aw_session_id", session_id.to_string()));
-    }
-    out
+    let sid = (!session_id.is_empty()).then(|| session_id.to_string());
+    vec![
+        ("@aw_agent", Some(agent.to_string())),
+        ("@aw_session_id", sid),
+        ("@aw_agent_pid", agent_pid.map(|p| p.to_string())),
+    ]
 }
 
 /// Where Homebrew, Linuxbrew and distro packages put tmux. Probed when
@@ -426,15 +441,27 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn pane_stamps_skip_what_we_do_not_know() {
+    fn pane_stamps_clear_an_id_they_do_not_know() {
         assert_eq!(
-            pane_stamps("claude", "sid-1"),
-            vec![("@aw_agent", "claude".to_string()), ("@aw_session_id", "sid-1".to_string())]
+            pane_stamps("claude", "sid-1", Some(42)),
+            vec![
+                ("@aw_agent", Some("claude".to_string())),
+                ("@aw_session_id", Some("sid-1".to_string())),
+                ("@aw_agent_pid", Some("42".to_string())),
+            ]
         );
-        // A pane with no conversation id yet still says which agent it runs.
-        assert_eq!(pane_stamps("codex", ""), vec![("@aw_agent", "codex".to_string())]);
+        // A pane with no conversation id yet still says which agent it runs,
+        // and drops any id or pid a previous agent left behind.
+        assert_eq!(
+            pane_stamps("codex", "", None),
+            vec![
+                ("@aw_agent", Some("codex".to_string())),
+                ("@aw_session_id", None),
+                ("@aw_agent_pid", None),
+            ]
+        );
         // And a shell claims nothing at all.
-        assert!(pane_stamps("", "").is_empty());
+        assert!(pane_stamps("", "", None).is_empty());
     }
 
     #[test]

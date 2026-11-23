@@ -33,11 +33,14 @@ records:
 | `last_event` | last event name fired |
 | `last_activity` | unix epoch of last hook fire |
 | `last_prompt` | from hook stdin payload (preserved across events) |
+| `session_id` | conversation id from the hook payload |
+| `agent_pid` | the agent process the last hook came from; a change means a new run |
 
 ## Event → status mapping
 
 | Agent | Event | Status |
 |---|---|---|
+| claude | `SessionStart` | idle (kept as is on compaction) |
 | claude | `UserPromptSubmit`, `PreToolUse` | working |
 | claude | `Notification` | waiting |
 | claude | `Stop` | idle |
@@ -172,12 +175,13 @@ moment.
 
 ## Pane options (for tmux-side tooling)
 
-`aw` stamps two pane-local tmux options on every agent pane it knows about:
+`aw` stamps pane-local tmux options on every agent pane it knows about:
 
 | Option | Meaning |
 |---|---|
 | `@aw_agent` | `claude`, `codex`, … |
 | `@aw_session_id` | the agent's conversation id, when one is known |
+| `@aw_agent_pid` | the agent process that reported them, when known |
 
 ```bash
 tmux show-options -p -t "$pane" -v @aw_session_id
@@ -185,18 +189,44 @@ tmux show-options -p -t "$pane" -v @aw_session_id
 
 They exist so a key binding or status format can ask "what is in this pane?"
 without knowing anything about the cache layout below. They are written by
-`aw hook` on every event that carries a conversation id, and by `aw resurrect`
-when it recreates a pane — which is the case that matters, because a resumed
-agent fires no hook until somebody types in it, leaving the pane anonymous to
-hook-driven tooling until then.
+`aw hook` on every event, including Claude's `SessionStart` (startup,
+`--resume`, `/clear`, compaction), and by `aw resurrect` when it recreates a
+pane, before its agent is running.
 
-Deliberately namespaced. `aw` does not write `@claude_session_id`: resuming a
-conversation makes Claude mint a fresh id, so Claude's own `SessionStart` hook
-is the authority on the current one and ours would be stale. If you read both,
-prefer that one and fall back to `@aw_session_id`.
+Options outlive the process that set them: a pane where Claude exited and
+Codex started still holds whatever was there before the next hook ran, and a
+bare shell holds it forever. So before acting on `@aw_session_id`, check that
+the pane is running that agent now and that `@aw_agent_pid` is that process.
+Resurrect leaves the pid unset, since the agent hasn't started yet; the agent's
+first hook fills it in.
 
-Empty values are never written — a pane with no conversation id yet gets
-`@aw_agent` only.
+When the agent changes, or another process of the same agent takes the pane
+(Codex exited and a new Codex started), `aw hook` drops the previous run's
+conversation id instead of carrying it over, and unsets `@aw_session_id` and
+`@aw_agent_pid` when it doesn't know them. A shell (no agent) gets nothing
+written.
+
+Claude's `SessionStart` hook is what keeps `@aw_session_id` right across
+`/clear`. Installs from before it existed need `aw install hooks --agent
+claude` once more to add it; re-running is safe.
+
+For Claude, `session_id` is the conversation to fork or resume. Hooks fired
+inside a Task sub-agent report the parent's `session_id`. Agent-team teammates
+in tmux split-pane mode are separate Claude processes in panes of their own,
+with their own ids; what in-process teammates report is unverified. A plain
+`claude --resume <id>` keeps `<id>`, while `/clear` and `--fork-session`
+switch to a new one (SessionStart reports the fork's new id). Checked on
+Claude Code 2.1.330.
+
+A `claude -p` that an agent runs as a tool inherits the pane's `$TMUX_PANE`,
+so its hooks write to that pane too, under its own pid. That is one more
+reason to check `@aw_agent_pid` against the pane's foreground process.
+
+`aw` does not write `@claude_session_id`; that option belongs to a Claude
+`SessionStart` hook outside aw, if you have one. If you read both, check both
+against the live process: when `@claude_session_id` is set without `-t`, tmux
+writes it to the active pane of the session's current window, not the pane
+the hook ran in.
 
 ## State files
 

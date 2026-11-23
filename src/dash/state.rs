@@ -63,6 +63,12 @@ pub struct PaneState {
     /// deleted, and the next hook stamps it.
     #[serde(default)]
     pub server_pid: Option<u32>,
+    /// The agent process the last hook came from. When it changes, the pane
+    /// holds a new agent run (Codex exited and Codex started again), and what
+    /// the old run told us, its conversation id above all, no longer holds.
+    /// `None` when unknown, including on files written before this existed.
+    #[serde(default)]
+    pub agent_pid: Option<u32>,
     /// tmux window this pane belongs to. Panes sharing a window are one group.
     /// Not persisted; refreshed from tmux on every load.
     #[serde(skip)]
@@ -114,6 +120,7 @@ impl PaneState {
             agent_known: !agent.is_empty(),
             window_id: String::new(),
             server_pid: None,
+            agent_pid: None,
             lead_pane: String::new(),
             spawned: 0,
         }
@@ -352,6 +359,7 @@ impl Snapshot {
                             // Built from tmux, not from a file, so it is by
                             // definition owned by the server we are talking to.
                             server_pid: live_server_pid,
+                            agent_pid: None,
                         },
                     };
                     entries.push(row);

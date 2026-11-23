@@ -209,7 +209,7 @@ fn install_claude_hooks_writes_all_events() {
     let raw = std::fs::read_to_string(env.home.join(".claude/settings.json")).unwrap();
     let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
     let hooks = &json["hooks"];
-    for ev in ["UserPromptSubmit", "PreToolUse", "Notification", "Stop"] {
+    for ev in ["SessionStart", "UserPromptSubmit", "PreToolUse", "Notification", "Stop"] {
         let arr = hooks[ev].as_array().expect(ev);
         let cmds: Vec<&str> = arr
             .iter()

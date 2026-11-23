@@ -127,8 +127,9 @@ manifest never recorded those. The agent's first hook after the restore
 fills them in.
 
 Restored panes are also stamped with `@aw_agent` and `@aw_session_id` (see
-[dash.md](dash.md)), so tmux bindings that act on "the agent in this pane" work
-immediately rather than only after you have typed in it.
+[dash.md](dash.md)) before the agent starts. The agent's own startup hook then
+confirms them and adds `@aw_agent_pid`. Claude fires `SessionStart` on
+`--resume` without waiting for input.
 
 ## What is *not* restored
 

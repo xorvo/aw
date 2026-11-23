@@ -12,6 +12,7 @@
 //!         ]
 //!       }
 //!     ],
+//!     "SessionStart": [...],
 //!     "PreToolUse":   [...],
 //!     "Notification": [...],
 //!     "Stop":         [...]
@@ -25,7 +26,16 @@
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
 
-const EVENTS: &[&str] = &["UserPromptSubmit", "PreToolUse", "Notification", "Stop"];
+/// `SessionStart` is there for the conversation id, not the status: it is the
+/// only event that fires when `/clear` or `--fork-session` switches the pane to
+/// a new conversation before anybody types.
+const EVENTS: &[&str] = &[
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "Notification",
+    "Stop",
+];
 
 pub fn install() -> Result<()> {
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("no home dir"))?;

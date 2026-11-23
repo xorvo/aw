@@ -479,10 +479,10 @@ fn restore_session(
             let st = seeded_pane_state(&r.session, &pane_id, p);
             let _ = crate::dash::state::pane_state_path(&pane_id)
                 .and_then(|path| st.write_atomic(&path));
-            // The whole point of stamping here: a resumed agent fires no hook until
-            // someone types in it, so without this the pane is anonymous to any
-            // tmux binding that wants to know which conversation it holds.
-            crate::dash::tmux::stamp_pane(&pane_id, &p.agent, &p.session_id);
+            // Label the pane before its agent starts, so tmux bindings know which
+            // conversation it holds from the outset. No pid: the agent is not
+            // running yet. Its startup hook confirms the stamps and adds one.
+            crate::dash::tmux::stamp_pane(&pane_id, &p.agent, &p.session_id, None);
 
             let mut restored = p.clone();
             restored.window_id = window.clone();

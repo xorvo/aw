@@ -17,7 +17,7 @@ use std::process::Command;
 use common::{aw_bin, TestEnv};
 
 fn tmux_available() -> bool {
-    Command::new("tmux")
+    common::tmux()
         .arg("-V")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -39,7 +39,7 @@ impl PrivateTmux {
     /// gated on that ownership, so an unstamped fixture is kept on purpose and
     /// would prove nothing.
     fn pid(&self) -> Option<u32> {
-        let out = Command::new("tmux")
+        let out = common::tmux()
             .args(["-S", self.socket_path.to_str().unwrap(), "list-sessions", "-F", "#{pid}"])
             .output()
             .ok()?;
@@ -58,12 +58,12 @@ impl PrivateTmux {
         let tmux_tmpdir = env.tmp.path().to_path_buf();
 
         // Defensive: kill any leftover server on this socket.
-        let _ = Command::new("tmux")
+        let _ = common::tmux()
             .args(["-S", socket_path.to_str().unwrap(), "kill-server"])
             .stderr(std::process::Stdio::null())
             .status();
 
-        let out = Command::new("tmux")
+        let out = common::tmux()
             .args([
                 "-S", socket_path.to_str().unwrap(),
                 "new-session", "-d",
@@ -84,7 +84,7 @@ impl PrivateTmux {
     }
 
     fn lines(&self, args: &[&str]) -> Vec<String> {
-        let out = Command::new("tmux")
+        let out = common::tmux()
             .args(["-S", self.socket_path.to_str().unwrap()])
             .args(args)
             .env("TMUX_TMPDIR", &self.tmux_tmpdir)
@@ -97,7 +97,7 @@ impl PrivateTmux {
     }
 
     fn raw(&self, args: &[&str]) -> std::process::Output {
-        Command::new("tmux")
+        common::tmux()
             .args(["-S", self.socket_path.to_str().unwrap()])
             .args(args)
             .env("TMUX_TMPDIR", &self.tmux_tmpdir)
@@ -183,7 +183,7 @@ fn rand_u32() -> u32 {
 
 impl Drop for PrivateTmux {
     fn drop(&mut self) {
-        let _ = Command::new("tmux")
+        let _ = common::tmux()
             .args(["-S", self.socket_path.to_str().unwrap(), "kill-server"])
             .env("TMUX_TMPDIR", &self.tmux_tmpdir)
             .stderr(std::process::Stdio::null())

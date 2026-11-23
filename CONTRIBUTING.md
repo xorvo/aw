@@ -52,6 +52,9 @@ cargo insta review
 The test harness (`tests/common/`) gives every test a sandboxed `$HOME`,
 state directory, and tmux socket dir. Tests that need a real tmux server
 spawn one via `tmux -S /tmp/awts-<pid>-<rand>.sock` and kill it on Drop.
+Every `tmux` a test runs goes through `common::tmux()` (or
+`common::sandbox_tmux*`, which also pin `-S`); `tests/harness_tmux_isolation.rs`
+fails on a bare `Command::new("tmux")`.
 
 ## The release process
 
@@ -255,6 +258,10 @@ Two workflows live in `.github/workflows/`:
 - When a test starts a tmux server, start it with `common::sandbox_env`. The
   server passes its environment to every pane it later creates, so a partially
   sandboxed server leaks straight onto the real cache.
+- Never let a test's `tmux` inherit `$TMUX`. Without `-L`/`-S`, tmux talks to
+  the server `$TMUX` names and ignores `TMUX_TMPDIR`, so `cargo test` run from
+  an aw pane once sent a cleanup `kill-server` to the developer's real server
+  and took every agent with it. Use `common::tmux()` / `common::sandbox_tmux`.
 - One central choke point per concept: status icons go through
   `dash::render::status_glyph`, tmux pane queries through
   `dash::tmux::list_panes_with_metadata`, marker-block edits through

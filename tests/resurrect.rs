@@ -3,7 +3,6 @@
 mod common;
 
 use common::{capture, TestEnv};
-use std::process::Command;
 
 /// Kills the sandbox's tmux server on drop, so a failed assertion never leaves
 /// one running.
@@ -13,16 +12,15 @@ struct ServerGuard {
 
 impl Drop for ServerGuard {
     fn drop(&mut self) {
-        let _ = Command::new("tmux")
+        let _ = common::sandbox_tmux_at(&self.tmpdir)
             .args(["kill-server"])
-            .env("TMUX_TMPDIR", &self.tmpdir)
             .stderr(std::process::Stdio::null())
             .status();
     }
 }
 
 fn tmux_available() -> bool {
-    Command::new("tmux").arg("-V").output().map(|o| o.status.success()).unwrap_or(false)
+    common::tmux().arg("-V").output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 /// An agent that split helpers into its own window is one group on the
@@ -63,9 +61,8 @@ fn resurrect_rebuilds_a_window_of_helpers_under_its_lead() {
     assert_eq!(cap.exit, 0, "{}\n{}", cap.stdout, cap.stderr);
 
     // Panes per window, in creation order.
-    let out = Command::new("tmux")
+    let out = common::sandbox_tmux(&env)
         .args(["list-panes", "-s", "-t", "aw-grp", "-F", "#{window_id} #{@aw_session_id}"])
-        .envs(common::sandbox_env(&env))
         .output()
         .unwrap();
     let listing = String::from_utf8_lossy(&out.stdout);

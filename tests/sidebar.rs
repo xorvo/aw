@@ -32,12 +32,12 @@ impl PrivateTmux {
     fn spawn(env: &TestEnv) -> Self {
         let socket = tmux_socket();
         // Make sure no leftover server with this name exists.
-        let _ = Command::new("tmux")
+        let _ = common::tmux()
             .args(["-L", &socket, "kill-server"])
             .stderr(std::process::Stdio::null())
             .status();
         // Set TMUX_TMPDIR so our server's socket is sandboxed under env.tmp.
-        Command::new("tmux")
+        common::tmux()
             .args([
                 "-L", &socket,
                 "new-session", "-d",
@@ -52,7 +52,7 @@ impl PrivateTmux {
     }
 
     fn send(&self, env: &TestEnv, args: &[&str]) -> std::process::Output {
-        let mut cmd = Command::new("tmux");
+        let mut cmd = common::tmux();
         cmd.args(["-L", &self.socket]).args(args);
         cmd.envs(common::sandbox_env(env))
             .output()
@@ -121,7 +121,7 @@ impl PrivateTmux {
 
 impl Drop for PrivateTmux {
     fn drop(&mut self) {
-        let _ = Command::new("tmux")
+        let _ = common::tmux()
             .args(["-L", &self.socket, "kill-server"])
             .env("TMUX_TMPDIR", &self.tmpdir)
             .stderr(std::process::Stdio::null())
@@ -130,7 +130,7 @@ impl Drop for PrivateTmux {
 }
 
 fn tmux_available() -> bool {
-    Command::new("tmux")
+    common::tmux()
         .arg("-V")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

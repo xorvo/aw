@@ -301,9 +301,8 @@ struct SandboxServer {
 
 impl SandboxServer {
     fn start(env: &TestEnv) -> Option<Self> {
-        let ok = Command::new("tmux")
+        let ok = common::sandbox_tmux(env)
             .args(["new-session", "-d", "-s", "probe", "-x", "80", "-y", "24"])
-            .envs(common::sandbox_env(env))
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
@@ -313,9 +312,8 @@ impl SandboxServer {
 
 impl Drop for SandboxServer {
     fn drop(&mut self) {
-        let _ = Command::new("tmux")
+        let _ = common::sandbox_tmux_at(&self.tmpdir)
             .args(["kill-server"])
-            .env("TMUX_TMPDIR", &self.tmpdir)
             .stderr(std::process::Stdio::null())
             .status();
     }

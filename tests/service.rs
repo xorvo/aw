@@ -20,6 +20,8 @@ use tempfile::TempDir;
 fn aw() -> Command {
     let mut c = Command::new(assert_cmd::cargo::cargo_bin("aw"));
     c.env("AW_SERVICE_SKIP_ACTIVATION", "1");
+    // No server lives there: `aw` must not see the host's.
+    common::isolate_from_host_tmux(&mut c, &std::env::temp_dir().join("aw-test-no-tmux"));
     c
 }
 

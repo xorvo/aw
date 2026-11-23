@@ -35,7 +35,9 @@ impl Drop for ServeGuard {
 fn start_server() -> ServeGuard {
     let state = TempDir::new().expect("state dir");
     std::fs::create_dir_all(state.path().join("panes")).expect("panes dir");
-    let mut child = Command::new(assert_cmd::cargo::cargo_bin("aw"))
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin("aw"));
+    common::isolate_from_host_tmux(&mut cmd, state.path());
+    let mut child = cmd
         .args(["serve", "--host", "127.0.0.1", "--port", "0"])
         .env("AW_STATE_DIR", state.path())
         .env("AW_REMOTE_TOKEN", TOKEN)

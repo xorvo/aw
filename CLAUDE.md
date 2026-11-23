@@ -101,6 +101,12 @@ Homebrew tap (macOS only). The release matrix and
   started without `AW_STATE_DIR` will run `aw` against the developer's real
   cache. `tests/dash.rs` has guards that fail if collection ever stops
   respecting ownership.
+- **Tests must never reach the real tmux server.** Run every `tmux` through
+  `common::tmux()` / `common::sandbox_tmux` (they drop `$TMUX`, which tmux
+  honours over `TMUX_TMPDIR`; a bare cleanup `kill-server` run from an aw pane
+  once killed a developer's server and all their agents). When running the
+  suite from inside tmux, use
+  `env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$(mktemp -d)" cargo test --tests`.
 
 ## Key directories & env vars
 

@@ -21,6 +21,64 @@ pub fn aw_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin("aw")
 }
 
+/// `tmux` with the caller's tmux session scrubbed from its environment. Every
+/// tmux the suite runs must start here.
+///
+/// Without `-L`/`-S`, tmux talks to the server named in `$TMUX` and ignores
+/// `$TMUX_TMPDIR`. So when `cargo test` runs inside a tmux pane, as it does for
+/// anyone using aw, a "sandboxed" `tmux kill-server` that only set
+/// `TMUX_TMPDIR` killed the developer's real server and every agent in it.
+/// That actually happened.
+pub fn tmux() -> Command {
+    let mut cmd = Command::new("tmux");
+    cmd.env_remove("TMUX").env_remove("TMUX_PANE");
+    cmd
+}
+
+/// For an `aw` process that keeps the runner's environment instead of
+/// `env_clear()`: cut it off from the host's tmux server. `aw` lists and
+/// drives panes on whatever server `$TMUX` names (`aw serve` sends keys to
+/// them), so without this a test can type into a developer's live agents.
+pub fn isolate_from_host_tmux(cmd: &mut Command, tmpdir: &Path) {
+    cmd.env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env("TMUX_TMPDIR", tmpdir);
+}
+
+/// The socket a sandbox's tmux server lives on: the default one tmux (and so
+/// `aw`) derives from `TMUX_TMPDIR=<tmpdir>`.
+pub fn sandbox_tmux_socket(tmpdir: &Path) -> PathBuf {
+    use std::os::unix::fs::MetadataExt;
+    let uid = std::fs::metadata(tmpdir).map(|m| m.uid()).unwrap_or(0);
+    tmpdir.join(format!("tmux-{uid}")).join("default")
+}
+
+/// [`tmux`] bound to the sandbox server under `tmpdir` by explicit `-S`, so it
+/// cannot reach any other server whatever the environment says.
+pub fn sandbox_tmux_at(tmpdir: &Path) -> Command {
+    use std::os::unix::fs::DirBuilderExt;
+    let socket = sandbox_tmux_socket(tmpdir);
+    if let Some(dir) = socket.parent() {
+        // tmux refuses a socket dir anyone else can read; `aw` resolves the
+        // same dir by default, so it has to look like one tmux made.
+        let _ = std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir);
+    }
+    let mut cmd = tmux();
+    cmd.env("TMUX_TMPDIR", tmpdir).arg("-S").arg(socket);
+    cmd
+}
+
+/// [`sandbox_tmux_at`] for a [`TestEnv`], with the full [`sandbox_env`] so a
+/// server it starts hands that env to its panes.
+pub fn sandbox_tmux(env: &TestEnv) -> Command {
+    let mut cmd = sandbox_tmux_at(env.tmp.path());
+    cmd.envs(sandbox_env(env));
+    cmd
+}
+
 /// Sandbox: a self-contained set of directories pointed at by aw's env-var
 /// overrides. No global state is touched.
 pub struct TestEnv {
